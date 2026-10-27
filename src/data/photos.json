@@ -1,0 +1,167 @@
+{
+  "_info": "Fotos ilustrativas de bancos gratuitos (Unsplash License / Pexels License: uso comercial permitido, atribuição opcional). Substitua por fotos próprias da loja quando tiver. 'remote' é a URL original; 'npm run fotos' baixa tudo para public/images/fotos/<id>.jpg. 'fallback' é um render local usado quando a foto remota não carrega (sem internet, prévia, URL removida).",
+  "photos": [
+    {
+      "id": "especial",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/37789425/pexels-photo-37789425.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/vibrant-acai-bowl-with-fresh-fruits-and-granola-37789425/",
+      "author": null,
+      "alt": "Açaí com morangos, mirtilos, banana e granola sobre mesa rústica",
+      "fallback": "/images/fallback/especial.webp"
+    },
+    {
+      "id": "tradicional",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1676515841519-7bb498597c73?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/a-bowl-of-ice-cream-with-bananas-and-granola-22wc2_XjB7o",
+      "author": "igor constantino",
+      "alt": "Açaí com rodelas de banana e granola",
+      "fallback": "/images/fallback/tradicional.webp"
+    },
+    {
+      "id": "morango",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/28935593/pexels-photo-28935593.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/vibrant-acai-bowl-with-fresh-strawberries-28935593/",
+      "author": null,
+      "alt": "Açaí coberto com morangos frescos e granola",
+      "fallback": "/images/fallback/morango.webp"
+    },
+    {
+      "id": "banana",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/5150303/pexels-photo-5150303.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/sliced-fruits-on-brown-bowl-5150303/",
+      "author": null,
+      "alt": "Açaí com rodelas de banana, coco e granola",
+      "fallback": "/images/fallback/banana.webp"
+    },
+    {
+      "id": "ninho",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/2173772/pexels-photo-2173772.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/bowl-on-white-surface-2173772/",
+      "author": null,
+      "alt": "Açaí com banana, chia e coco em flocos",
+      "fallback": "/images/fallback/ninho.webp"
+    },
+    {
+      "id": "nutella",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/3035261/pexels-photo-3035261.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/white-disposable-bowl-3035261/",
+      "author": null,
+      "alt": "Açaí na tigela com granola e pedaços de chocolate",
+      "fallback": "/images/fallback/nutella.webp"
+    },
+    {
+      "id": "tropical",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/38606024/pexels-photo-38606024.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/healthy-acai-bowl-with-fresh-fruits-38606024/",
+      "author": null,
+      "alt": "Açaí com kiwi, morango e granola",
+      "fallback": "/images/fallback/tropical.webp"
+    },
+    {
+      "id": "exp-cremoso",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/12273052/pexels-photo-12273052.jpeg?auto=compress&cs=tinysrgb&w=1800",
+      "page": "https://www.pexels.com/photo/close-up-photo-of-acai-bowl-12273052/",
+      "author": null,
+      "alt": "Close de um açaí cremoso com frutas e granola",
+      "fallback": "/images/fallback/exp-cremoso.webp"
+    },
+    {
+      "id": "exp-morangos",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/6637835/pexels-photo-6637835.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/close-up-of-an-acai-bowl-6637835/",
+      "author": null,
+      "alt": "Açaí com morangos, mirtilos e granola, em close",
+      "fallback": "/images/fallback/exp-morangos.webp"
+    },
+    {
+      "id": "exp-granola",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/1334129/pexels-photo-1334129.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/wooden-scoop-on-bowl-1334129/",
+      "author": null,
+      "alt": "Açaí com granola, frutas vermelhas e hortelã sobre madeira",
+      "fallback": "/images/fallback/exp-granola.webp"
+    },
+    {
+      "id": "exp-coberturas",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/11094179/pexels-photo-11094179.jpeg?auto=compress&cs=tinysrgb&w=1800",
+      "page": "https://www.pexels.com/photo/oatmeal-with-chocolate-and-honey-11094179/",
+      "author": null,
+      "alt": "Calda sendo despejada sobre um açaí com granola e frutas",
+      "fallback": "/images/fallback/exp-coberturas.webp"
+    },
+    {
+      "id": "exp-copos",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/20348546/pexels-photo-20348546.jpeg?auto=compress&cs=tinysrgb&w=1800",
+      "page": "https://www.pexels.com/photo/cup-of-fruit-salad-20348546/",
+      "author": null,
+      "alt": "Copo de açaí com frutas visto de cima",
+      "fallback": "/images/fallback/exp-copos.webp"
+    },
+    {
+      "id": "gal-duas-tigelas",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1627308594190-a057cd4bfac8?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/acai-bowls-with-fruit-and-granola-yIh0i6TYGrs",
+      "author": "Vicky Ng",
+      "alt": "Duas tigelas de açaí com banana, frutas vermelhas e granola",
+      "fallback": "/images/fallback/gal-duas-tigelas.webp"
+    },
+    {
+      "id": "gal-prancha",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1787406988073-c6ed034788ad?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/acai-bowl-on-surfboard-breakfast-IQMLA38XTbI",
+      "author": "Brooke Balentine",
+      "alt": "Açaí com banana, mirtilos, granola e coco sobre uma prancha de surfe",
+      "fallback": "/images/fallback/gal-prancha.webp"
+    },
+    {
+      "id": "gal-tigela-madeira",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1777113310717-1047d523f2ad?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/a-wooden-bowl-filled-with-granola-and-fruit-4XCVStuV2Y0",
+      "author": "note thanun",
+      "alt": "Tigela de madeira com açaí, granola e frutas",
+      "fallback": "/images/fallback/gal-tigela-madeira.webp"
+    },
+    {
+      "id": "gal-amoras",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1709139068234-f83a548f3bec?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/a-bowl-of-fruit-and-nuts-on-a-table-W5uhTCfY3Mc",
+      "author": "Abdelrahman Sarayreh",
+      "alt": "Açaí com amoras, frutas e castanhas",
+      "fallback": "/images/fallback/gal-amoras.webp"
+    },
+    {
+      "id": "gal-banana",
+      "source": "unsplash",
+      "remote": "https://images.unsplash.com/photo-1771371000586-33abd2ce9e23?auto=format&fit=crop&w=1600&q=80",
+      "page": "https://unsplash.com/photos/acai-bowl-with-sliced-bananas-on-a-white-plate-43VMTJ1WfsM",
+      "author": "Jakub Pabis",
+      "alt": "Açaí com rodelas de banana em prato branco",
+      "fallback": "/images/fallback/gal-banana.webp"
+    },
+    {
+      "id": "gal-feira",
+      "source": "pexels",
+      "remote": "https://images.pexels.com/photos/29942738/pexels-photo-29942738.jpeg?auto=compress&cs=tinysrgb&w=1600",
+      "page": "https://www.pexels.com/photo/vibrant-fruit-baskets-at-belem-market-29942738/",
+      "author": null,
+      "alt": "Cestos com frutos de açaí em uma feira de Belém",
+      "fallback": "/images/fallback/gal-feira.webp"
+    }
+  ]
+}
