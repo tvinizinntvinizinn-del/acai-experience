@@ -9,8 +9,8 @@ export function Footer() {
       <div className="px-6 md:px-[5vw]">
         <div className="grid gap-10 md:grid-cols-3">
           <div>
-            <Logo className="text-cream" markClassName="size-12" textClassName="text-[2rem]" />
-            <p className="mt-3 max-w-[20rem] text-sm">{site.description}</p>
+            <Logo height={150} className="h-[150px] w-auto" />
+            <p className="mt-4 max-w-[20rem] text-sm">{site.description}</p>
           </div>
           <nav aria-label="Rodapé">
             <ul className="space-y-2 text-sm">

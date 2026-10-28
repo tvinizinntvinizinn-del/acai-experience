@@ -47,7 +47,7 @@ export type SiteConfig = {
 };
 
 export const site: SiteConfig = {
-  name: "Açaí Experience",
+  name: "Açaí Point 92",
   description:
     "Açaí cremoso montado do seu jeito. Escolha tamanho, base, complementos e coberturas e envie o pedido pelo WhatsApp.",
   url: "https://www.seudominio.com.br",

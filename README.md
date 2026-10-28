@@ -1,6 +1,6 @@
-# Açaí Experience
+# Açaí Point 92
 
-Site cinematográfico para açaiteria: copo de açaí como protagonista, intro animada,
+Site cinematográfico da açaiteria Açaí Point 92: copo de açaí como protagonista, intro animada,
 coreografia de scroll com GSAP, cardápio, montador de copo, carrinho e pedido pelo
 WhatsApp.
 
@@ -37,7 +37,7 @@ por sessão) ou limpe o `sessionStorage`.
 
 ## Fotos, logo e o copo 3D
 
-**Logo:** pote de açaí original em `src/components/ui/Logo.tsx` (header, menu e rodapé) e `src/app/icon.svg` (ícone da aba). O corpo do pote usa a cor do texto, então acompanha o tema claro e escuro.
+**Logo:** arte oficial da loja com o fundo recortado em `public/images/brand/logo.webp`, usada pelo componente `src/components/ui/Logo.tsx` (header, menu do celular, rodapé e reserva das fotos). Ícone da aba em `src/app/icon.png` e ícone do iPhone em `src/app/apple-icon.png`. Os originais ficam em `tools/brand/` (`logo-original.png` com fundo, `logo-recortada.webp` sem fundo). Para trocar a logo, substitua `logo.webp` por outra com fundo transparente e ajuste `LOGO.width/height` em `Logo.tsx`.
 
 **Fotos (cardápio, Experiência e Galeria):** fotos reais de açaí de bancos gratuitos, listadas em `src/data/photos.json` com o link da página original de cada uma.
 
@@ -46,7 +46,7 @@ por sessão) ou limpe o `sessionStorage`.
 - Por padrão o site carrega as fotos dos servidores do Unsplash/Pexels e o `next/image` otimiza e guarda em cache. Para hospedar as cópias no próprio projeto: `npm run fotos` (baixa para `public/images/fotos/`) e depois `localPhotos: true` em `src/config/site.ts`.
 - Se uma foto não carregar (sem internet, prévia, link removido), entra no lugar um render 3D local de `public/images/fallback/` com o mesmo tema. Se nem esse carregar, aparece um painel roxo com a logo.
 
-**Renders provisórios (copo 3D):** o copo do Hero, os ingredientes animados, a prévia do montador e o copo do contato continuam sendo renders gerados para o layout:
+**Copo 3D (renders):** o copo do Hero, os ingredientes animados, a prévia do montador e o copo do contato são renders gerados por código (copo de plástico transparente com reflexo de estúdio, açaí cremoso, banana e morango encostados na parede, granola 3D, leite condensado e gotas de condensação):
 
 | Arquivo | Para quê |
 | --- | --- |
@@ -63,7 +63,7 @@ Para a versão final do copo:
 1. **Sequência renderizada (recomendado):** exporte os frames com as especificações de `public/sequence/README.md` e substitua os arquivos com os mesmos nomes.
 2. **Modelo 3D:** coloque `public/models/acai-cup.glb` (convenções em `public/models/README.md`) e mude `renderer: "model"` em `src/config/experience.ts`.
 
-O script que gerou os renders está em `tools/render-placeholders`.
+O script que gerou os renders está em `tools/render-placeholders` (veja o README de lá).
 
 ## O que cada seção faz
 

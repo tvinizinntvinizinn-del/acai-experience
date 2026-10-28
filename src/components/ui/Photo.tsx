@@ -2,7 +2,7 @@
 
 import Image, { type ImageProps } from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LogoMark } from "./Logo";
+import { LOGO } from "./Logo";
 
 type Props = Omit<ImageProps, "onError" | "src"> & {
   src: string;
@@ -62,7 +62,8 @@ export function Photo({ src, fallbackSrc, onFallback, fallbackTone = "#4B1768", 
         className="absolute inset-0 grid place-items-center"
         style={{ background: `radial-gradient(70% 70% at 50% 40%, ${fallbackTone}, #240D38)` }}
       >
-        <LogoMark className="size-[22%] min-w-12 max-w-24 text-cream/85" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={LOGO.src} alt="" width={LOGO.width} height={LOGO.height} className="h-auto w-[34%] min-w-16 max-w-40 opacity-90" />
       </span>
     );
   }

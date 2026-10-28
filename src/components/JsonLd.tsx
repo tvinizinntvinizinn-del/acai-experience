@@ -9,6 +9,7 @@ export function JsonLd() {
     description: site.description,
     url: site.url,
     image: `${site.url}/images/og.jpg`,
+    logo: `${site.url}/images/brand/logo.webp`,
     servesCuisine: "Açaí",
   };
   if (isWhatsAppConfigured) data.telephone = `+${site.contact.whatsapp}`;

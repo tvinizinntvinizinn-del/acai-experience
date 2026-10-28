@@ -1,4 +1,4 @@
-# CLAUDE.md — Açaí Experience
+# CLAUDE.md — Açaí Point 92
 
 Regras técnicas e de animação do projeto. Leia antes de alterar qualquer componente.
 
@@ -21,10 +21,10 @@ Regras técnicas e de animação do projeto. Leia antes de alterar qualquer comp
 | Montador: bases, complementos, coberturas, limites, preços | `src/data/builder.ts` |
 | Ingredientes da seção "Cada camada" | `src/data/ingredients.ts` |
 | Fotos ilustrativas (banco de imagens) | `src/data/photos.json` (+ `media.ts`, `menu.ts`) |
-| Logo | `src/components/ui/Logo.tsx`, `src/app/icon.svg` |
+| Logo | `public/images/brand/logo.webp` (via `src/components/ui/Logo.tsx`), `src/app/icon.png`, `src/app/apple-icon.png` |
 | Links do menu | `src/config/nav.ts` |
 
-Fotos: só de bancos com licença comercial (Unsplash, Pexels) ou da própria loja, sempre registradas em `photos.json` com a página de origem. Use `<Photo>` (`components/ui/Photo.tsx`), que mostra a marca se a imagem falhar. Novos hosts remotos precisam entrar em `images.remotePatterns` no `next.config.ts`.
+Fotos: só de bancos com licença comercial (Unsplash, Pexels) ou da própria loja, sempre registradas em `photos.json` com a página de origem. Use `<Photo>` (`components/ui/Photo.tsx`), que mostra a logo se a imagem falhar. Novos hosts remotos precisam entrar em `images.remotePatterns` no `next.config.ts`.
 
 Regras de conteúdo: **nunca inventar** preços reais, telefone, endereço, horários, fotos da loja ou links de imagens. Campos vazios simplesmente não aparecem. Preços são demonstrativos enquanto `site.demoPrices = true` (o site avisa isso).
 

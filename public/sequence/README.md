@@ -1,8 +1,8 @@
 # Sequências de imagens do copo
 
-Os frames atuais são **renders provisórios** gerados proceduralmente (veja
-`tools/render-placeholders`). Substitua por renders profissionais (Blender,
-Cinema 4D, KeyShot) ou fotos em mesa giratória mantendo os nomes abaixo.
+Os frames atuais são renders gerados por código (veja `tools/render-placeholders`).
+Para fotos reais do copo da loja, use renders profissionais (Blender, Cinema 4D,
+KeyShot) ou fotos em mesa giratória mantendo os nomes abaixo.
 
 ## Especificação
 
@@ -17,6 +17,6 @@ Cinema 4D, KeyShot) ou fotos em mesa giratória mantendo os nomes abaixo.
 - Fundo **transparente** (WebP com alfa) — o site troca o fundo creme/roxo por trás.
 - Sem sombra no chão (o site desenha a sombra e a flutuação).
 - Câmera: lente tele (~20° de FOV vertical), elevação ~19°, copo ocupando ~92% da altura, mesmo enquadramento em todos os frames.
-- Iluminação: luz principal lateral (esquerda), contraluz rosada à direita, reflexos de estúdio.
+- Iluminação: luz principal lateral (esquerda), contraluz rosada à direita, softboxes altos refletindo no copo.
 
 Se mudar a quantidade de frames ou a proporção, ajuste `src/config/experience.ts`.

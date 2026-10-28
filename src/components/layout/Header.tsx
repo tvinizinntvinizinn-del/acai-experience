@@ -98,9 +98,9 @@ export function Header() {
               go(0);
             }}
             aria-label={`${site.name} — voltar ao início`}
-            className="-ml-1 rounded-lg p-1"
+            className="-ml-1 rounded-full p-0.5"
           >
-            <Logo markClassName="size-8 md:size-9" />
+            <Logo height={60} preload alt="" className="h-[52px] w-auto drop-shadow-[0_4px_10px_rgb(36_13_56/0.28)] md:h-[60px]" />
           </a>
 
           <nav aria-label="Principal" className="hidden md:block">
@@ -147,7 +147,7 @@ export function Header() {
         className={`fixed inset-0 z-[95] flex flex-col bg-night text-cream transition-[opacity,visibility] duration-300 md:hidden ${menuOpen ? "visible opacity-100" : "invisible opacity-0"}`}
       >
         <div className="flex h-16 items-center justify-between px-5">
-          <Logo markClassName="size-8" />
+          <Logo height={52} className="h-[52px] w-auto" />
           <button type="button" onClick={() => setMenuOpen(false)} className="grid size-11 place-items-center rounded-full" aria-label="Fechar menu">
             <X aria-hidden="true" className="size-6" />
           </button>
