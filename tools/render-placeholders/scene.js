@@ -1,6 +1,8 @@
-// Procedural açaí cup scene — renders placeholder frames/sprites offline.
+// Cena procedural do copo de açaí — renderiza offline os frames e recortes do site.
+// v2: materiais físicos, estúdio com softboxes (reflexos no copo), frutas e granola 3D
+// encostadas na parede do copo e captura com acúmulo (antisserrilhado, sombra suave e
+// oclusão por várias direções de luz).
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
@@ -13,7 +15,6 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-// compact 3D simplex noise
 const grad3 = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
 function makeNoise(seed = 1) {
   const r = mulberry32(seed);
@@ -48,8 +49,9 @@ const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 function hex(c) { const v = parseInt(c.slice(1), 16); return [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
 function mixc(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+function halton(i, b) { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; }
 
-function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')]; }
+function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d', { willReadFrequently: true })]; }
 function tex(c, { srgb = true, wrap = false } = {}) {
   const t = new THREE.CanvasTexture(c);
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
@@ -57,7 +59,7 @@ function tex(c, { srgb = true, wrap = false } = {}) {
   if (wrap) { t.wrapS = t.wrapT = THREE.RepeatWrapping; }
   t.needsUpdate = true; return t;
 }
-function pixelTex(w, h, fn, opts) {
+function pixelTex(w, h, fn) {
   const [c, ctx] = canvas(w, h); const img = ctx.createImageData(w, h); const d = img.data;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const o = (y * w + x) * 4; const col = fn(x / w, y / h, x, y);
@@ -66,196 +68,129 @@ function pixelTex(w, h, fn, opts) {
   ctx.putImageData(img, 0, 0); return [c, ctx];
 }
 
-// ---------------------------------------------------------------- dimensions
+// ---------------------------------------------------------------- dimensões
 const H = 2.3, RT = 1.0, RB = 0.72;
 const cupR = (y) => RB + (RT - RB) * clamp(y / H);
 const INNER = (y) => cupR(Math.min(y, H)) - 0.016;
 const EDGE_Y = H + 0.012;
+const SLOPE = (RT - RB) / H;
+const Y0 = 0.05;
+const vToY = (v) => lerp(Y0, EDGE_Y, v);
 
-// ---------------------------------------------------------------- palettes
+// ---------------------------------------------------------------- paletas (açaí real: roxo-vinho bem escuro)
 const BASES = {
-  acai: { dark: '#12031a', mid: '#2f0a43', light: '#562072', frost: '#7d4a9a' },
-  cupuacu: { dark: '#b88a4a', mid: '#e8c98d', light: '#f6e2b5', frost: '#fff1d2' },
-  acaiTop: { dark: '#1e0532', mid: '#4a1470', light: '#7c34a6', frost: '#a865d0' },
-  mix: { dark: '#3a1240', mid: '#6b2f6e', light: '#a0609c', frost: '#d6a8cf' },
+  acai: { dark: '#110207', mid: '#2a051b', light: '#470f33', smear: '#6f2b55' },
+  acaiTop: { dark: '#120208', mid: '#30061f', light: '#561540', smear: '#7a3462' },
+  cupuacu: { dark: '#a98244', mid: '#dcc08a', light: '#efdcb0', smear: '#fbf0d6' },
+  mix: { dark: '#2a0a26', mid: '#5a2550', light: '#8c527f', smear: '#c79bbd' },
 };
 
-const SIDE = {
-  acai: { dark: '#14031f', mid: '#3d0f5a', light: '#6f2a92', frost: '#a777c2' },
-  cupuacu: { dark: '#a87a3c', mid: '#dcbb7c', light: '#f3dcaa', frost: '#fff3d8' },
-  acaiTop: { dark: '#14031f', mid: '#3d0f5a', light: '#6f2a92', frost: '#a777c2' },
-  mix: { dark: '#2a0b30', mid: '#5c2660', light: '#9a5c96', frost: '#d6a8cf' },
-};
-// ---------------------------------------------------------------- textures (cached)
 const cache = {};
 let TOP_RES = 1024;
 export function setTopRes(v) { TOP_RES = v; }
-function acaiTopTextures(baseKey) {
-  const k = 'top_' + baseKey + TOP_RES; if (cache[k]) return cache[k];
-  const P = BASES[baseKey];
-  const dark = hex(P.dark), mid = hex(P.mid), light = hex(P.light), frost = hex(P.frost);
-  const S = TOP_RES;
-  const heights = new Float32Array(S * S);
-  const [cm] = pixelTex(S, S, (u, v, x, y) => {
-    const wx = u * 6, wy = v * 6;
-    const warp = N.fbm(wx * 0.5, wy * 0.5, 3.1, 3);
-    const n = N.fbm(wx + warp * 0.7, wy - warp * 0.5, 1.7, 4);
-    const fine = N.n3(u * 90, v * 90, 9.3) * 0.5 + N.n3(u * 220, v * 220, 2.1) * 0.25;
-    const du = u - 0.5, dv = v - 0.5; const dist = Math.hypot(du, dv); const ang = Math.atan2(dv, du);
-    const ridge = 0.5 + 0.5 * Math.sin(dist * 44 + ang + warp * 3.2);
-    const t = clamp(0.5 + n * 0.5);
-    heights[y * S + x] = t * 0.5 + ridge * 0.22 + fine * 0.14 + 0.08;
-    let col = mixc(dark, mid, smooth(0.05, 0.95, t * 0.85 + ridge * 0.12));
-    col = mixc(col, light, smooth(0.78, 1.0, t) * 0.3 + smooth(0.85, 1, ridge) * 0.12);
-    const streak = smooth(0.7, 0.95, N.fbm(wx * 1.8 + warp * 3, wy * 1.8, 5.5, 4) * 0.5 + 0.5);
-    col = mixc(col, frost, streak * 0.07);
-    col = mixc(col, dark, clamp(-fine) * 0.3);
-    return col;
-  });
-  const [bm] = pixelTex(S, S, (u, v, x, y) => { const h = clamp(heights[y * S + x]) * 255; return [h, h, h]; });
-  cache[k] = { map: tex(cm, { wrap: true }), bump: tex(bm, { srgb: false, wrap: true }) };
-  return cache[k];
-}
 
+// ---------------------------------------------------------------- texturas
+// Parede: açaí encostado no plástico — manchas alongadas, bolhas e falhas de contato.
 function sideTexture(baseKey, layered = true) {
   const k = 'side_' + baseKey + layered; if (cache[k]) return cache[k];
-  const P = SIDE[baseKey];
+  const P = BASES[baseKey === 'acaiTop' ? 'acai' : baseKey];
   const W = 2048, Hh = 1024;
-  const dark = hex(P.dark), mid = hex(P.mid), light = hex(P.light), frost = hex(P.frost);
-  const milk = hex('#f3e2bb'), milk2 = hex('#e2c992');
+  const dark = hex(P.dark), mid = hex(P.mid), light = hex(P.light), smear = hex(P.smear);
+  const milk = hex('#f3e9d0'), milk2 = hex('#dccb9f');
   const cyl = (u) => [Math.cos(u * Math.PI * 2) * 2.4, Math.sin(u * Math.PI * 2) * 2.4];
-  const base = new Uint8ClampedArray(W * Hh * 4);
-  const [c, ctx] = pixelTex(W, Hh, (u, vv, px, py) => {
+  const [c] = pixelTex(W, Hh, (u, vv) => {
     const v = 1 - vv; const [cx, cz] = cyl(u);
-    const n = N.fbm(cx * 1.1, v * 3.2, cz * 1.1, 5);
-    const sm = N.fbm(cx * 0.7 + v * 1.5, v * 16, cz * 0.7, 4);
-    const t = clamp(0.32 + n * 0.75);
-    let col = mixc(dark, mid, t);
-    col = mixc(col, light, smooth(0.18, 0.62, sm) * 0.55);
-    col = mixc(col, frost, smooth(0.62, 0.95, N.fbm(cx * 2.2, v * 22, cz * 2.2, 3) * 0.5 + 0.5) * 0.32);
-    const pocket = N.n3(cx * 26, v * 70, cz * 26);
-    if (pocket > 0.66) col = mixc(col, dark, 0.7);
-    if (pocket > 0.6 && pocket < 0.66) col = mixc(col, frost, 0.35);
+    const warp = N.fbm(cx * 0.6, v * 1.6, cz * 0.6, 3);
+    const body = N.fbm(cx * 0.9 + warp, v * 2.4, cz * 0.9, 4);
+    let col = mixc(dark, mid, clamp(0.55 + body * 0.9));
+    // manchas onde o creme ficou fino contra o plástico (alongadas na vertical/diagonal)
+    const sm = N.fbm(cx * 1.4 + warp * 1.6 + v * 0.8, v * 7.5, cz * 1.4, 4);
+    col = mixc(col, light, smooth(0.1, 0.55, sm) * 0.38);
+    col = mixc(col, smear, smooth(0.35, 0.7, sm) * 0.18);
+    // falhas de contato (mais escuras)
+    const gap = N.fbm(cx * 1.8, v * 4.0 + 3.1, cz * 1.8, 3);
+    col = mixc(col, dark, smooth(0.18, 0.42, gap) * 0.55);
+    // bolhinhas de ar
+    const b = N.n3(cx * 34, v * 86, cz * 34);
+    if (b > 0.7) col = mixc(col, dark, 0.75);
+    else if (b > 0.63) col = mixc(col, smear, 0.3 * (b - 0.63) / 0.07);
     if (layered) {
-      // condensed milk band with drips
+      // faixa de leite condensado com escorridos
       const top = 0.235 + N.n3(cx * 1.6, 3.3, cz * 1.6) * 0.022 + N.n3(cx * 7, 1.2, cz * 7) * 0.006;
       const drip = Math.pow(Math.max(0, N.n3(cx * 3.2, 8.1, cz * 3.2) - 0.3), 1.2) * 0.2;
       const bot = 0.17 + N.n3(cx * 2.2, 7.7, cz * 2.2) * 0.018 - drip;
       if (v < top && v > bot) {
         const edge = Math.min(v - bot, top - v);
-        const a = smooth(0.0, 0.012, edge);
-        const tone = clamp(0.5 + N.fbm(cx * 4, v * 40, cz * 4, 3) * 0.8);
-        col = mixc(col, mixc(milk2, milk, tone), a * 0.96);
+        const a = smooth(0.0, 0.01, edge);
+        const tone = clamp(0.55 + N.fbm(cx * 4, v * 40, cz * 4, 3) * 0.7);
+        col = mixc(col, mixc(milk2, milk, tone), a * 0.97);
       }
-      // granola band base (chunks drawn later)
-      const gt = 0.345 + N.n3(cx * 2, 5.5, cz * 2) * 0.02, gb = 0.25 + N.n3(cx * 2.4, 9.9, cz * 2.4) * 0.015;
-      if (v < gt && v > gb) col = mixc(col, hex('#2e1608'), 0.85);
+      // fundo escuro da faixa de granola (os pedaços são 3D)
+      const gt = 0.35 + N.n3(cx * 2, 5.5, cz * 2) * 0.02, gb = 0.245 + N.n3(cx * 2.4, 9.9, cz * 2.4) * 0.015;
+      if (v < gt && v > gb) col = mixc(col, hex('#2a1408'), 0.9);
     }
     return col;
   });
-  if (layered) {
-    const rnd = mulberry32(5);
-    // granola chunks
-    for (let i = 0; i < 1500; i++) {
-      const u = rnd(); const [cx, cz] = cyl(u);
-      const gt = 0.345 + N.n3(cx * 2, 5.5, cz * 2) * 0.02, gb = 0.25 + N.n3(cx * 2.4, 9.9, cz * 2.4) * 0.015;
-      const v = gb + rnd() * (gt - gb); const x = u * W, y = (1 - v) * Hh;
-      const r = 4 + Math.pow(rnd(), 2) * 16; const sides = 5 + Math.floor(rnd() * 3);
-      const colr = GRANOLA_COLS[Math.floor(rnd() * GRANOLA_COLS.length)];
-      ctx.save(); ctx.translate(x, y); ctx.rotate(rnd() * 6.28);
-      ctx.beginPath();
-      for (let s2 = 0; s2 < sides; s2++) { const a = (s2 / sides) * 6.28; const rr = r * (0.7 + rnd() * 0.5); ctx.lineTo(Math.cos(a) * rr * 1.2, Math.sin(a) * rr * 0.9); }
-      ctx.closePath();
-      ctx.fillStyle = colr; ctx.fill();
-      ctx.strokeStyle = 'rgba(40,18,6,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
-      ctx.fillStyle = 'rgba(255,235,190,0.22)'; ctx.beginPath(); ctx.ellipse(-r * 0.25, -r * 0.25, r * 0.4, r * 0.25, 0.4, 0, 7); ctx.fill();
-      ctx.restore();
-    }
-    // fruit pressed on the wall
-    const [fc, fx] = canvas(W, Hh);
-    const items = 7;
-    for (let i = 0; i < items; i++) {
-      const u = (i + 0.3 + rnd() * 0.4) / items; const v = 0.6 + rnd() * 0.16;
-      const x = u * W, y = (1 - v) * Hh; const isBanana = i % 2 === 0;
-      fx.save(); fx.translate(x, y); fx.rotate((rnd() - 0.5) * 0.6);
-      if (isBanana) {
-        const rx = 58, ry = 72;
-        const g = fx.createRadialGradient(0, 0, 3, 0, 0, rx);
-        g.addColorStop(0, '#f6ecc4'); g.addColorStop(0.6, '#efdf9f'); g.addColorStop(0.9, '#e2c983'); g.addColorStop(1, 'rgba(200,170,100,0.9)');
-        fx.fillStyle = g; fx.beginPath(); fx.ellipse(0, 0, rx, ry, 0, 0, 7); fx.fill();
-        fx.strokeStyle = 'rgba(200,170,105,0.35)'; fx.lineWidth = 1.2;
-        for (let a = 0; a < 22; a++) { const ang = (a / 22) * 6.28; fx.beginPath(); fx.moveTo(Math.cos(ang) * 10, Math.sin(ang) * 12); fx.lineTo(Math.cos(ang) * rx * 0.85, Math.sin(ang) * ry * 0.85); fx.stroke(); }
-        fx.fillStyle = 'rgba(110,86,48,0.85)';
-        for (let a = 0; a < 3; a++) { const ang = (a / 3) * 6.28 + 0.4; fx.beginPath(); fx.ellipse(Math.cos(ang) * 7, Math.sin(ang) * 9, 2.6, 3.6, ang, 0, 7); fx.fill(); }
-      } else {
-        const rx = 54, ry = 80;
-        fx.beginPath(); fx.moveTo(0, ry); fx.bezierCurveTo(rx * 1.15, ry * 0.2, rx * 0.95, -ry * 0.9, 0, -ry * 0.72); fx.bezierCurveTo(-rx * 0.95, -ry * 0.9, -rx * 1.15, ry * 0.2, 0, ry); fx.closePath();
-        fx.save(); fx.clip();
-        const g = fx.createRadialGradient(0, -6, 4, 0, 0, rx * 1.25);
-        g.addColorStop(0, '#fde6e4'); g.addColorStop(0.4, '#f49aa6'); g.addColorStop(0.78, '#db2d48'); g.addColorStop(1, '#9e0b25');
-        fx.fillStyle = g; fx.fillRect(-rx * 1.5, -ry * 1.5, rx * 3, ry * 3);
-        fx.strokeStyle = 'rgba(255,240,238,0.75)'; fx.lineWidth = 5; fx.beginPath(); fx.moveTo(0, -ry * 0.55); fx.quadraticCurveTo(3, 0, 0, ry * 0.65); fx.stroke();
-        fx.lineWidth = 1.3; fx.strokeStyle = 'rgba(255,232,232,0.5)';
-        for (let a = 0; a < 16; a++) { const ang = (a / 16) * 6.28; fx.beginPath(); fx.moveTo(Math.cos(ang) * 8, Math.sin(ang) * 12); fx.lineTo(Math.cos(ang) * rx * 0.88, Math.sin(ang) * ry * 0.84); fx.stroke(); }
-        fx.restore();
-      }
-      fx.restore();
-    }
-    // composite fruit with açaí occlusion
-    const fd = fx.getImageData(0, 0, W, Hh).data; const bd = ctx.getImageData(0, 0, W, Hh); const d = bd.data;
-    const [blc, blx] = canvas(W, Hh); blx.filter = 'blur(9px)'; blx.drawImage(fc, 0, 0); const bl = blx.getImageData(0, 0, W, Hh).data;
-    for (let py = 0; py < Hh; py++) for (let px = 0; px < W; px++) {
-      const o = (py * W + px) * 4; const fa = fd[o + 3] / 255; if (fa < 0.01) continue;
-      const u = px / W, v = 1 - py / Hh; const [cx, cz] = cyl(u);
-      const ba = bl[o + 3] / 255; const nn = N.fbm(cx * 9, v * 40, cz * 9, 3);
-      const a = fa * smooth(0.45, 0.85, ba + nn * 0.35) * 0.97;
-      d[o] = lerp(d[o], fd[o], a); d[o + 1] = lerp(d[o + 1], fd[o + 1], a); d[o + 2] = lerp(d[o + 2], fd[o + 2], a);
-    }
-    ctx.putImageData(bd, 0, 0);
-  }
   cache[k] = tex(c, { wrap: true });
   return cache[k];
+}
+const granolaBand = (cx, cz) => [0.245 + N.n3(cx * 2.4, 9.9, cz * 2.4) * 0.015, 0.35 + N.n3(cx * 2, 5.5, cz * 2) * 0.02];
+
+function microBump() {
+  if (cache.micro) return cache.micro;
+  const S = 512;
+  const [c] = pixelTex(S, S, (u, v) => {
+    const a = u * Math.PI * 2, b = v * Math.PI * 2; // periódico
+    const x = Math.cos(a) * 3, y = Math.sin(a) * 3, z = Math.cos(b) * 3, w = Math.sin(b) * 3;
+    const n = N.fbm(x + w * 0.3, y + z * 0.3, z + w, 4) * 0.6 + N.n3(x * 6, y * 6 + w * 6, z * 6) * 0.25;
+    const h = clamp(0.5 + n * 0.6) * 255; return [h, h, h];
+  });
+  cache.micro = tex(c, { srgb: false, wrap: true }); return cache.micro;
 }
 
 function strawberryTextures() {
   if (cache.straw) return cache.straw;
   const S = 1024; const rnd = mulberry32(9);
   const [c, ctx] = pixelTex(S, S, (u, v) => {
-    const n = N.fbm(u * 8, v * 8, 2, 4);
-    const top = smooth(0.78, 1.0, v);
-    let col = mixc(hex('#e0233c'), hex('#b40f2a'), clamp(0.5 + n));
-    col = mixc(col, hex('#f05a52'), clamp(n * 0.6));
-    col = mixc(col, hex('#f2b9a0'), top * 0.5);
+    const n = N.fbm(u * 9, v * 9, 2, 4);
+    const top = smooth(0.8, 1.0, v);
+    let col = mixc(hex('#b80f1f'), hex('#8e0816'), clamp(0.45 + n));
+    col = mixc(col, hex('#d8262f'), clamp(n * 0.9));
+    col = mixc(col, hex('#e98b72'), top * 0.6);
+    col = mixc(col, hex('#f3d2b0'), smooth(0.93, 1.0, v) * 0.7);
     return col;
   });
   const [bc, bctx] = canvas(S, S); bctx.fillStyle = '#8a8a8a'; bctx.fillRect(0, 0, S, S);
-  const rows = 16;
+  const rows = 18;
   for (let r = 0; r < rows; r++) {
-    const v = 0.06 + (r / rows) * 0.82; const count = Math.round(lerp(8, 22, Math.sin(v * Math.PI)));
+    const v = 0.05 + (r / rows) * 0.84; const count = Math.round(lerp(8, 24, Math.sin(v * Math.PI)));
     for (let i = 0; i < count; i++) {
-      const u = (i + (r % 2) * 0.5) / count + (rnd() - 0.5) * 0.01; const x = u * S, y = (1 - v) * S;
-      // pit
-      const pg = bctx.createRadialGradient(x, y, 0, x, y, 16); pg.addColorStop(0, '#3a3a3a'); pg.addColorStop(1, 'rgba(138,138,138,0)');
-      bctx.fillStyle = pg; bctx.beginPath(); bctx.ellipse(x, y, 16, 20, 0, 0, Math.PI * 2); bctx.fill();
-      bctx.fillStyle = '#d0d0d0'; bctx.beginPath(); bctx.ellipse(x, y + 1, 4, 6, 0, 0, Math.PI * 2); bctx.fill();
-      // color
-      const g = ctx.createRadialGradient(x, y, 0, x, y, 14); g.addColorStop(0, 'rgba(120,8,25,0.55)'); g.addColorStop(1, 'rgba(120,8,25,0)');
-      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, 14, 18, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = rnd() > 0.3 ? '#efcf56' : '#e5a843'; ctx.beginPath(); ctx.ellipse(x, y + 1, 3.6, 5.5, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,230,0.7)'; ctx.beginPath(); ctx.ellipse(x - 1, y - 1, 1.2, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+      const u = (i + (r % 2) * 0.5) / count + (rnd() - 0.5) * 0.012; const x = u * S, y = (1 - v) * S;
+      const pg = bctx.createRadialGradient(x, y, 0, x, y, 13); pg.addColorStop(0, '#3c3c3c'); pg.addColorStop(1, 'rgba(138,138,138,0)');
+      bctx.fillStyle = pg; bctx.beginPath(); bctx.ellipse(x, y, 13, 17, 0, 0, Math.PI * 2); bctx.fill();
+      bctx.fillStyle = '#c6c6c6'; bctx.beginPath(); bctx.ellipse(x, y + 1, 3.2, 4.6, 0, 0, Math.PI * 2); bctx.fill();
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 12); g.addColorStop(0, 'rgba(90,4,14,0.6)'); g.addColorStop(1, 'rgba(90,4,14,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, 12, 16, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rnd() > 0.35 ? '#e2c45a' : '#c9a23f'; ctx.beginPath(); ctx.ellipse(x, y + 1, 2.8, 4.2, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
-  // cut face
+  // face cortada
   const [fc, fctx] = canvas(512, 512);
-  let g = fctx.createRadialGradient(256, 230, 10, 256, 256, 300);
-  g.addColorStop(0, '#fff3f0'); g.addColorStop(0.3, '#f8c2c4'); g.addColorStop(0.62, '#ef7083'); g.addColorStop(0.82, '#d81f3c'); g.addColorStop(1, '#b30c27');
+  // o rosto ocupa só o miolo da textura (UV ~0,08–0,92): gradiente curto para a borda ficar vermelha
+  const g = fctx.createRadialGradient(256, 236, 6, 256, 250, 215);
+  g.addColorStop(0, '#f1bcb4'); g.addColorStop(0.25, '#e9818a'); g.addColorStop(0.5, '#d93a50'); g.addColorStop(0.75, '#c51932'); g.addColorStop(0.92, '#a10d24'); g.addColorStop(1, '#850a1b');
   fctx.fillStyle = g; fctx.fillRect(0, 0, 512, 512);
-  fctx.filter = 'blur(3px)'; fctx.strokeStyle = 'rgba(255,248,244,0.6)'; fctx.lineWidth = 16; fctx.lineCap = 'round';
-  fctx.beginPath(); fctx.moveTo(256, 90); fctx.bezierCurveTo(240, 220, 270, 330, 256, 440); fctx.stroke();
-  fctx.lineWidth = 2; fctx.strokeStyle = 'rgba(255,240,240,0.22)';
-  for (let a = 0; a < 22; a++) { const ang = a / 22 * Math.PI * 2; fctx.beginPath(); fctx.moveTo(256 + Math.cos(ang) * 30, 260 + Math.sin(ang) * 40); fctx.lineTo(256 + Math.cos(ang) * 210, 256 + Math.sin(ang) * 230); fctx.stroke(); }
-  fctx.filter = 'none'; fctx.globalAlpha = 0.16;
-  for (let i = 0; i < 400; i++) { fctx.fillStyle = rnd() > 0.5 ? '#ffffff' : '#c41634'; fctx.beginPath(); fctx.arc(rnd() * 512, rnd() * 512, rnd() * 3, 0, 7); fctx.fill(); }
+  fctx.filter = 'blur(4px)'; fctx.strokeStyle = 'rgba(255,236,228,0.6)'; fctx.lineWidth = 13; fctx.lineCap = 'round';
+  fctx.beginPath(); fctx.moveTo(256, 110); fctx.bezierCurveTo(244, 220, 268, 320, 256, 420); fctx.stroke();
+  fctx.filter = 'blur(2px)'; fctx.lineWidth = 3;
+  for (let a = 0; a < 28; a++) {
+    const ang = (a / 28) * Math.PI * 2 + rnd() * 0.08;
+    fctx.strokeStyle = `rgba(255,228,226,${0.06 + rnd() * 0.08})`;
+    fctx.beginPath(); fctx.moveTo(256 + Math.cos(ang) * 26, 262 + Math.sin(ang) * 40);
+    fctx.quadraticCurveTo(256 + Math.cos(ang + 0.1) * 120, 256 + Math.sin(ang + 0.1) * 140, 256 + Math.cos(ang) * 205, 256 + Math.sin(ang) * 225); fctx.stroke();
+  }
+  fctx.filter = 'none'; fctx.globalAlpha = 0.12;
+  for (let i = 0; i < 900; i++) { fctx.fillStyle = rnd() > 0.5 ? '#ffffff' : '#a50c22'; fctx.beginPath(); fctx.arc(rnd() * 512, rnd() * 512, rnd() * 2.4, 0, 7); fctx.fill(); }
   fctx.globalAlpha = 1;
   cache.straw = { map: tex(c), bump: tex(bc, { srgb: false }), face: tex(fc) };
   return cache.straw;
@@ -266,109 +201,140 @@ function capTexture(kind) {
   const S = 512; const [c, ctx] = canvas(S, S); const rnd = mulberry32(kind.length * 13);
   const C = S / 2;
   if (kind === 'banana') {
-    let g = ctx.createRadialGradient(C, C, 5, C, C, C);
-    g.addColorStop(0, '#fbf3cf'); g.addColorStop(0.55, '#f5e6ab'); g.addColorStop(0.86, '#ecd68c'); g.addColorStop(0.95, '#dcc178'); g.addColorStop(1, '#c9ad62');
+    const g = ctx.createRadialGradient(C, C, 4, C, C, C);
+    g.addColorStop(0, '#e6d394'); g.addColorStop(0.2, '#f0dfa6'); g.addColorStop(0.55, '#eedb9a'); g.addColorStop(0.8, '#e6cc80'); g.addColorStop(0.93, '#d4b266'); g.addColorStop(1, '#b8954c');
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
-    ctx.strokeStyle = 'rgba(205,175,100,0.35)'; ctx.lineWidth = 2;
-    for (let a = 0; a < 40; a++) { const ang = a / 40 * Math.PI * 2 + rnd() * 0.05; ctx.beginPath(); ctx.moveTo(C + Math.cos(ang) * 30, C + Math.sin(ang) * 30); ctx.lineTo(C + Math.cos(ang) * 225, C + Math.sin(ang) * 225); ctx.stroke(); }
-    const sg = ctx.createRadialGradient(C, C, 0, C, C, 60); sg.addColorStop(0, 'rgba(220,200,140,0.8)'); sg.addColorStop(1, 'rgba(220,200,140,0)');
-    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(C, C, 60, 0, 7); ctx.fill();
-    ctx.fillStyle = '#5c4728';
-    for (let a = 0; a < 3; a++) { const ang = a / 3 * Math.PI * 2 + 0.4; ctx.beginPath(); ctx.ellipse(C + Math.cos(ang) * 22, C + Math.sin(ang) * 22, 6, 9, ang, 0, 7); ctx.fill(); }
-    for (let i = 0; i < 18; i++) { const ang = rnd() * 7, rr = 30 + rnd() * 25; ctx.fillStyle = 'rgba(110,85,50,0.5)'; ctx.beginPath(); ctx.arc(C + Math.cos(ang) * rr, C + Math.sin(ang) * rr, 2 + rnd() * 2, 0, 7); ctx.fill(); }
+    // fibras radiais suaves
+    ctx.lineWidth = 1.4;
+    for (let a = 0; a < 70; a++) { const ang = a / 70 * Math.PI * 2 + rnd() * 0.04; ctx.strokeStyle = `rgba(214,186,118,${0.12 + rnd() * 0.14})`; ctx.beginPath(); ctx.moveTo(C + Math.cos(ang) * 40, C + Math.sin(ang) * 40); ctx.lineTo(C + Math.cos(ang) * 232, C + Math.sin(ang) * 232); ctx.stroke(); }
+    // miolo: três lóbulos translúcidos + sementinhas
+    ctx.save(); ctx.filter = 'blur(6px)';
+    for (let a = 0; a < 3; a++) { const ang = a / 3 * Math.PI * 2 + 0.5; ctx.fillStyle = 'rgba(214,196,140,0.55)'; ctx.beginPath(); ctx.ellipse(C + Math.cos(ang) * 30, C + Math.sin(ang) * 30, 34, 18, ang, 0, 7); ctx.fill(); }
+    ctx.restore();
+    for (let a = 0; a < 3; a++) {
+      const ang = a / 3 * Math.PI * 2 + 0.5;
+      for (let s = 0; s < 8; s++) { const rr = 8 + s * 6 + rnd() * 3; ctx.fillStyle = `rgba(48,30,14,${0.6 + rnd() * 0.35})`; ctx.beginPath(); ctx.ellipse(C + Math.cos(ang) * rr + (rnd() - 0.5) * 6, C + Math.sin(ang) * rr + (rnd() - 0.5) * 6, 2.8 + rnd() * 1.4, 2 + rnd(), ang, 0, 7); ctx.fill(); }
+    }
+    ctx.fillStyle = 'rgba(95,70,40,0.5)'; ctx.beginPath(); ctx.arc(C, C, 4, 0, 7); ctx.fill();
+    // manchinhas e anel fibroso perto da casca
+    for (let i = 0; i < 260; i++) { const ang = rnd() * 6.28, rr = Math.sqrt(rnd()) * 230; ctx.fillStyle = `rgba(${rnd() > 0.5 ? '255,250,225' : '190,160,95'},${0.05 + rnd() * 0.08})`; ctx.beginPath(); ctx.arc(C + Math.cos(ang) * rr, C + Math.sin(ang) * rr, 3 + rnd() * 10, 0, 7); ctx.fill(); }
+    ctx.strokeStyle = 'rgba(200,165,95,0.35)'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(C, C, 205, 0, 7); ctx.stroke();
   } else if (kind === 'kiwi') {
-    let g = ctx.createRadialGradient(C, C, 5, C, C, C);
-    g.addColorStop(0, '#f4f5d8'); g.addColorStop(0.16, '#eef2c4'); g.addColorStop(0.3, '#a6cc3d'); g.addColorStop(0.8, '#7fb22a'); g.addColorStop(0.93, '#6a9c22'); g.addColorStop(0.96, '#8a6a3a'); g.addColorStop(1, '#5e4428');
+    const g = ctx.createRadialGradient(C, C, 5, C, C, C);
+    g.addColorStop(0, '#f1f2d4'); g.addColorStop(0.15, '#e9efc0'); g.addColorStop(0.3, '#9fc43a'); g.addColorStop(0.8, '#76a826'); g.addColorStop(0.93, '#5f911f'); g.addColorStop(0.96, '#7d6036'); g.addColorStop(1, '#553d24');
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
-    ctx.strokeStyle = 'rgba(235,245,200,0.55)'; ctx.lineWidth = 3;
-    for (let a = 0; a < 46; a++) { const ang = a / 46 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(C + Math.cos(ang) * 50, C + Math.sin(ang) * 50); ctx.lineTo(C + Math.cos(ang) * 205, C + Math.sin(ang) * 205); ctx.stroke(); }
-    for (let a = 0; a < 58; a++) { const ang = a / 58 * Math.PI * 2 + rnd() * 0.05, rr = 70 + rnd() * 18; ctx.save(); ctx.translate(C + Math.cos(ang) * rr, C + Math.sin(ang) * rr); ctx.rotate(ang); ctx.fillStyle = '#121008'; ctx.beginPath(); ctx.ellipse(0, 0, 7, 3.6, 0, 0, 7); ctx.fill(); ctx.restore(); }
-  } else if (kind === 'flesh') {
-    ctx.fillStyle = '#f2df9f'; ctx.fillRect(0, 0, S, S);
+    ctx.strokeStyle = 'rgba(235,245,200,0.45)'; ctx.lineWidth = 2.5;
+    for (let a = 0; a < 52; a++) { const ang = a / 52 * Math.PI * 2; ctx.beginPath(); ctx.moveTo(C + Math.cos(ang) * 48, C + Math.sin(ang) * 48); ctx.lineTo(C + Math.cos(ang) * 205, C + Math.sin(ang) * 205); ctx.stroke(); }
+    for (let a = 0; a < 62; a++) { const ang = a / 62 * Math.PI * 2 + rnd() * 0.05, rr = 68 + rnd() * 20; ctx.save(); ctx.translate(C + Math.cos(ang) * rr, C + Math.sin(ang) * rr); ctx.rotate(ang); ctx.fillStyle = '#100d06'; ctx.beginPath(); ctx.ellipse(0, 0, 6.5, 3.2, 0, 0, 7); ctx.fill(); ctx.restore(); }
   }
   cache[k] = tex(c); return cache[k];
 }
 
-// ---------------------------------------------------------------- materials
+// ---------------------------------------------------------------- materiais
+// Plástico do copo: só os reflexos (somados por cima do conteúdo) + leve opacidade no alfa.
+// Evita o passe de transmissão do three, que custava ~3,5 s por passe no SwiftShader.
+function glassReflect(env = 5, alpha = 0.14, roughness = 0.04) {
+  return new THREE.MeshPhysicalMaterial({
+    color: 0x000000, roughness, metalness: 0, specularIntensity: 1, envMapIntensity: env, opacity: alpha,
+    transparent: true, depthWrite: false, blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+    blendEquationAlpha: THREE.AddEquation, blendSrcAlpha: THREE.OneMinusDstAlphaFactor, blendDstAlpha: THREE.OneFactor,
+  });
+}
 function mats(baseKey = 'acai') {
   const k = 'mats_' + baseKey; if (cache[k]) return cache[k];
-  const top = acaiTopTextures(baseKey);
   const s = strawberryTextures();
+  const micro = microBump();
   const m = {
-    cup: new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: 0, roughness: 0.08, transmission: 1, thickness: 0.05, ior: 1.46, clearcoat: 1, clearcoatRoughness: 0.05, specularIntensity: 1, envMapIntensity: 2.2, attenuationColor: new THREE.Color('#f4eefa'), attenuationDistance: 3 }),
-    rim: new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.04, transmission: 1, thickness: 0.02, ior: 1.3, clearcoat: 1, envMapIntensity: 2 }),
-    side: new THREE.MeshPhysicalMaterial({ map: sideTexture(baseKey), roughness: 0.55, clearcoat: 0.3, clearcoatRoughness: 0.5 }),
-    sidePlain: new THREE.MeshPhysicalMaterial({ map: sideTexture(baseKey, false), roughness: 0.55 }),
-    top: new THREE.MeshPhysicalMaterial({ map: top.map, bumpMap: top.bump, bumpScale: 0.7, roughness: 0.5, clearcoat: 0.35, clearcoatRoughness: 0.35 }),
-    straw: new THREE.MeshPhysicalMaterial({ map: s.map, bumpMap: s.bump, bumpScale: 3, roughness: 0.34, clearcoat: 0.6, clearcoatRoughness: 0.18, sheen: 0.2, sheenColor: new THREE.Color('#ff9a9a') }),
-    strawFace: new THREE.MeshPhysicalMaterial({ map: s.face, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.08, side: THREE.DoubleSide }),
-    leaf: new THREE.MeshPhysicalMaterial({ color: '#4c8a2a', roughness: 0.5, clearcoat: 0.5, side: THREE.DoubleSide }),
-    bananaCap: new THREE.MeshPhysicalMaterial({ map: capTexture('banana'), roughness: 0.5, clearcoat: 0.35, clearcoatRoughness: 0.3 }),
-    bananaSide: new THREE.MeshPhysicalMaterial({ color: '#dcc274', roughness: 0.55, clearcoat: 0.2 }),
-    kiwiCap: new THREE.MeshPhysicalMaterial({ map: capTexture('kiwi'), roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1 }),
-    kiwiSide: new THREE.MeshPhysicalMaterial({ color: '#6f5232', roughness: 0.9 }),
-    mango: new THREE.MeshPhysicalMaterial({ color: '#ffa51f', roughness: 0.3, clearcoat: 0.9, clearcoatRoughness: 0.15, sheen: 0.4, sheenColor: new THREE.Color('#ffd27a') }),
-    granola: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 }),
-    milk: new THREE.MeshPhysicalMaterial({ color: '#f2deb2', roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.06, sheen: 0.5, sheenColor: new THREE.Color('#fff8ea'), specularIntensity: 1 }),
-    choc: new THREE.MeshPhysicalMaterial({ color: '#3a1f14', roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.08 }),
-    honey: new THREE.MeshPhysicalMaterial({ color: '#d98a12', roughness: 0.08, clearcoat: 1, transmission: 0.35, thickness: 0.2, ior: 1.5 }),
-    powder: new THREE.MeshStandardMaterial({ color: '#fbf6ea', roughness: 1 }),
-    pacoca: new THREE.MeshStandardMaterial({ color: '#c99d63', roughness: 0.95 }),
-    berry: new THREE.MeshPhysicalMaterial({ color: '#241030', roughness: 0.45, clearcoat: 0.6, sheen: 1, sheenColor: new THREE.Color('#6a5a9a'), sheenRoughness: 0.5 }),
-    drop: new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.0, transmission: 1, thickness: 0.03, ior: 1.33, clearcoat: 1, specularIntensity: 1, envMapIntensity: 1.6 }),
+    cup: glassReflect(0.18),
+    rim: glassReflect(0.3),
+    haze: new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.05, depthWrite: false }),
+    rimHaze: new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.1, depthWrite: false }),
+    side: new THREE.MeshPhysicalMaterial({ map: sideTexture(baseKey), roughness: 0.3, bumpMap: micro, bumpScale: 0.25, envMapIntensity: 0.45 }),
+    sidePlain: new THREE.MeshPhysicalMaterial({ map: sideTexture(baseKey, false), roughness: 0.3, bumpMap: micro, bumpScale: 0.25, envMapIntensity: 0.45 }),
+    top: new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.42, bumpMap: micro, bumpScale: 0.45, clearcoat: 0.18, clearcoatRoughness: 0.3, sheen: 0.35, sheenRoughness: 0.45, sheenColor: new THREE.Color('#8e3a72'), envMapIntensity: 0.25 }),
+    straw: new THREE.MeshPhysicalMaterial({ map: s.map, bumpMap: s.bump, bumpScale: 2.4, roughness: 0.3, clearcoat: 0.85, clearcoatRoughness: 0.12, envMapIntensity: 0.7 }),
+    strawFace: new THREE.MeshPhysicalMaterial({ map: s.face, roughness: 0.48, clearcoat: 0.05, clearcoatRoughness: 0.2, side: THREE.DoubleSide, envMapIntensity: 0.22 }),
+    leaf: new THREE.MeshPhysicalMaterial({ color: '#3d7a2a', roughness: 0.45, clearcoat: 0.4, side: THREE.DoubleSide, envMapIntensity: 0.6, sheen: 0.3, sheenColor: new THREE.Color('#bfe39a') }),
+    banana: new THREE.MeshPhysicalMaterial({ map: capTexture('banana'), roughness: 0.4, clearcoat: 0.35, clearcoatRoughness: 0.3, sheen: 0.25, sheenColor: new THREE.Color('#fff1c4'), envMapIntensity: 0.5, bumpMap: microBump(), bumpScale: 0.2 }),
+    kiwi: new THREE.MeshPhysicalMaterial({ map: capTexture('kiwi'), roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.08, envMapIntensity: 0.6 }),
+    mango: new THREE.MeshPhysicalMaterial({ color: '#ff9f1c', roughness: 0.3, clearcoat: 0.9, clearcoatRoughness: 0.12, sheen: 0.4, sheenColor: new THREE.Color('#ffd27a'), envMapIntensity: 0.6 }),
+    granola: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0, envMapIntensity: 0.5, bumpMap: micro, bumpScale: 0.6 }),
+    milk: new THREE.MeshPhysicalMaterial({ color: '#f3e8cf', roughness: 0.14, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 0.6, sheenColor: new THREE.Color('#ffffff'), envMapIntensity: 0.85 }),
+    choc: new THREE.MeshPhysicalMaterial({ color: '#341a10', roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 0.8 }),
+    honey: new THREE.MeshPhysicalMaterial({ color: '#d98a12', roughness: 0.08, clearcoat: 1, envMapIntensity: 0.9, sheen: 0.5, sheenColor: new THREE.Color('#ffc65a') }),
+    powder: new THREE.MeshStandardMaterial({ color: '#fbf6ea', roughness: 1, envMapIntensity: 0.6 }),
+    pacoca: new THREE.MeshStandardMaterial({ color: '#c99d63', roughness: 0.95, envMapIntensity: 0.5, bumpMap: micro, bumpScale: 1.2 }),
+    berry: new THREE.MeshPhysicalMaterial({ color: '#1e0b22', roughness: 0.4, clearcoat: 0.6, sheen: 1, sheenColor: new THREE.Color('#5e4c86'), sheenRoughness: 0.5, envMapIntensity: 0.7 }),
+    drop: glassReflect(0.35, 0.2, 0.02),
     spoon: new THREE.MeshPhysicalMaterial({ color: '#8137C8', roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1 }),
   };
+  // Com scene.environment o three ignora envMapIntensity do material; ligando o envMap
+  // em cada material a intensidade individual passa a valer (copo forte, comida suave).
+  for (const mat of Object.values(m)) if (ENV && 'envMap' in mat) mat.envMap = ENV;
   cache[k] = m; return m;
 }
 
-// ---------------------------------------------------------------- geometry builders
+// ---------------------------------------------------------------- geometria do copo
 function cupGeometry() {
   if (cache.cupGeo) return cache.cupGeo;
   const pts = [];
   pts.push(new THREE.Vector2(0.0, 0.035));
   pts.push(new THREE.Vector2(RB - 0.06, 0.035));
-  pts.push(new THREE.Vector2(RB - 0.04, 0.0));
-  for (let i = 0; i <= 40; i++) { const y = (i / 40) * H; pts.push(new THREE.Vector2(cupR(y) + 0.004, y)); }
-  const g = new THREE.LatheGeometry(pts, 160);
-  const rim = new THREE.TorusGeometry(RT + 0.01, 0.014, 16, 160); rim.rotateX(Math.PI / 2); rim.translate(0, H, 0);
+  pts.push(new THREE.Vector2(RB - 0.035, 0.0));
+  for (let i = 0; i <= 48; i++) { const y = (i / 48) * H; pts.push(new THREE.Vector2(cupR(y) + 0.004, y)); }
+  const g = new THREE.LatheGeometry(pts, 200);
+  const rim = new THREE.TorusGeometry(RT + 0.012, 0.016, 20, 200); rim.rotateX(Math.PI / 2); rim.translate(0, H, 0);
   cache.cupGeo = { body: g, rim };
   return cache.cupGeo;
 }
 
 function contentsGeometry() {
   if (cache.contGeo) return cache.contGeo;
-  const pts = []; const y0 = 0.05, y1 = EDGE_Y;
-  pts.push(new THREE.Vector2(0, y0));
-  for (let i = 0; i <= 40; i++) { const y = lerp(y0, y1, i / 40); pts.push(new THREE.Vector2(INNER(y), y)); }
-  const g = new THREE.LatheGeometry(pts, 160);
-  // remap v so the side texture uses only the wall part
+  const pts = []; const y1 = EDGE_Y;
+  pts.push(new THREE.Vector2(0, Y0));
+  for (let i = 0; i <= 48; i++) { const y = lerp(Y0, y1, i / 48); pts.push(new THREE.Vector2(INNER(y), y)); }
+  const g = new THREE.LatheGeometry(pts, 200);
   const uv = g.attributes.uv; const pos = g.attributes.position;
-  for (let i = 0; i < uv.count; i++) { uv.setY(i, clamp((pos.getY(i) - y0) / (y1 - y0))); }
+  for (let i = 0; i < uv.count; i++) uv.setY(i, clamp((pos.getY(i) - Y0) / (y1 - Y0)));
   cache.contGeo = g; return g;
 }
 
-// top surface height
-function topHeight(x, z, bare = false) {
+// topo: monte cremoso com dobras de colherada
+function topHeight(x, z) {
   const R = INNER(EDGE_Y); const r = Math.hypot(x, z) / R;
   if (r > 1) return EDGE_Y;
   const th = Math.atan2(z, x);
-  const dome = 0.24 * Math.pow(1 - r * r, 0.75);
-  const swirl = 0.03 * Math.sin(th * 2 + r * 12) * Math.sin(Math.PI * r);
-  const lumps = N.fbm(x * 2.2, z * 2.2, 0.5, 3) * 0.05 * (1 - r * 0.6);
-  return EDGE_Y + dome + swirl + lumps + 0.005;
+  const dome = 0.3 * Math.pow(1 - r * r, 0.62) + 0.035 * N.n3(Math.cos(th) * 1.3, Math.sin(th) * 1.3, 6.6) * smooth(0.6, 0.95, r);
+  const w = N.fbm(x * 1.2, z * 1.2, 4.2, 3);
+  const folds = 0.04 * Math.sin(th * 1.0 + r * 15.0 + w * 3.8) * smooth(0.0, 0.25, r);
+  const scoop = 0.07 * Math.max(0, N.fbm(x * 1.6 + 7.3, z * 1.6, 1.1, 3));
+  const lumps = N.fbm(x * 3.4, z * 3.4, 0.5, 5) * 0.05 + Math.abs(N.n3(x * 9, z * 9, 2.2)) * 0.012;
+  const fall = smooth(1.0, 0.82, r);
+  return EDGE_Y + dome + (folds + scoop + lumps) * fall + 0.004;
 }
 
-function topGeometry() {
-  if (cache.topGeo) return cache.topGeo;
-  const R = INNER(EDGE_Y); const rings = 90, segs = 200;
-  const pos = [], uv = [], idx = [];
+function topGeometry(baseKey) {
+  const k = 'topGeo_' + baseKey; if (cache[k]) return cache[k];
+  const P = BASES[baseKey];
+  const dark = new THREE.Color(P.dark), mid = new THREE.Color(P.mid), light = new THREE.Color(P.light);
+  const R = INNER(EDGE_Y); const rings = 130, segs = 300;
+  const pos = [], uv = [], col = [], idx = [];
+  const tmp = new THREE.Color();
   for (let i = 0; i <= rings; i++) {
     const r = (i / rings) * R;
     for (let j = 0; j <= segs; j++) {
       const th = (j / segs) * Math.PI * 2; const x = Math.cos(th) * r, z = Math.sin(th) * r;
       let y = topHeight(x, z);
       if (i === rings) y = EDGE_Y;
-      pos.push(x, y, z); uv.push(x / (2 * R) * 0.96 + 0.5, z / (2 * R) * 0.96 + 0.5);
+      pos.push(x, y, z); uv.push(x / (2 * R) * 3 + 0.5, z / (2 * R) * 3 + 0.5);
+      // cavidade: compara com a média dos vizinhos → vales mais escuros, cristas mais claras
+      const e = 0.035;
+      const avg = (topHeight(x + e, z) + topHeight(x - e, z) + topHeight(x, z + e) + topHeight(x, z - e)) / 4;
+      const cav = clamp((y - avg) * 160, -1, 1);
+      const n = N.fbm(x * 4, z * 4, 9.1, 3);
+      tmp.copy(mid).lerp(dark, clamp(0.4 - cav * 0.8 + n * 0.5)).lerp(light, clamp(cav * 0.7 + n * 0.25) * 0.75);
+      col.push(tmp.r, tmp.g, tmp.b);
     }
   }
   for (let i = 0; i < rings; i++) for (let j = 0; j < segs; j++) {
@@ -378,21 +344,23 @@ function topGeometry() {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setIndex(idx); g.computeVertexNormals();
-  cache.topGeo = g; return g;
+  cache[k] = g; return g;
 }
 
-const STRAW_PROFILE = [[0, -0.5], [0.1, -0.47], [0.21, -0.39], [0.31, -0.25], [0.38, -0.09], [0.415, 0.06], [0.41, 0.18], [0.36, 0.28], [0.26, 0.35], [0.13, 0.385], [0, 0.39]];
+// ---------------------------------------------------------------- frutas
+const STRAW_PROFILE = [[0, -0.5], [0.09, -0.47], [0.2, -0.39], [0.3, -0.26], [0.37, -0.1], [0.405, 0.05], [0.4, 0.18], [0.355, 0.28], [0.26, 0.35], [0.13, 0.385], [0, 0.39]];
 function strawberryGeometry(half, seed = 1) {
   const k = 'sg_' + half + seed; if (cache[k]) return cache[k];
   const pts = STRAW_PROFILE.map(([r, y]) => new THREE.Vector2(r, y));
-  const g = new THREE.LatheGeometry(pts, 64, 0, half ? Math.PI : Math.PI * 2);
+  const g = new THREE.LatheGeometry(pts, 72, 0, half ? Math.PI : Math.PI * 2);
   const nz = makeNoise(seed);
   const p = g.attributes.position;
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
     const n = 1 + nz.n3(x * 3, y * 3, z * 3) * 0.06;
-    p.setXYZ(i, x * n * 1.0, y, z * n * 0.94);
+    p.setXYZ(i, x * n, y, z * n * 0.94);
   }
   g.computeVertexNormals();
   let face = null;
@@ -411,78 +379,119 @@ function strawberryGeometry(half, seed = 1) {
 
 function leafGeometry() {
   if (cache.leaf) return cache.leaf;
-  const s = new THREE.Shape(); s.moveTo(0, 0); s.quadraticCurveTo(0.09, 0.12, 0, 0.3); s.quadraticCurveTo(-0.09, 0.12, 0, 0);
+  const s = new THREE.Shape(); s.moveTo(0, 0); s.quadraticCurveTo(0.085, 0.11, 0.012, 0.29); s.lineTo(0, 0.31); s.lineTo(-0.012, 0.29); s.quadraticCurveTo(-0.085, 0.11, 0, 0);
   const g = new THREE.ShapeGeometry(s, 12);
   const p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setZ(i, -y * y * 1.6 + Math.abs(p.getX(i)) * 0.4); }
+  for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setZ(i, -y * y * 1.6 + Math.abs(p.getX(i)) * 0.5); }
   g.computeVertexNormals(); cache.leaf = g; return g;
 }
 
 function makeStrawberry(m, { half = false, seed = 1, calyx = true } = {}) {
   const grp = new THREE.Group();
+  const rnd = mulberry32(seed * 17);
   const geo = strawberryGeometry(half, seed);
-  const shell = new THREE.Mesh(geo.shell, m.straw); shell.castShadow = shell.receiveShadow = true; grp.add(shell);
-  if (half) { const f = new THREE.Mesh(geo.face, m.strawFace); f.castShadow = f.receiveShadow = true; grp.add(f); }
+  const shell = new THREE.Mesh(geo.shell, m.straw); grp.add(shell);
+  if (half) { const f = new THREE.Mesh(geo.face, m.strawFace); grp.add(f); }
   if (calyx) {
-    const lg = leafGeometry(); const n = 7;
+    const lg = leafGeometry(); const n = 8;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + seed;
       if (half && Math.sin(a) < -0.05) continue;
-      const l = new THREE.Mesh(lg, m.leaf); l.castShadow = true;
+      const l = new THREE.Mesh(lg, m.leaf);
       l.position.set(0, 0.37, 0);
-      l.rotation.order = 'YXZ'; l.rotation.y = a; l.rotation.x = -1.25 + Math.random() * 0.15;
-      l.scale.setScalar(0.85 + Math.random() * 0.3);
+      l.rotation.order = 'YXZ'; l.rotation.y = a; l.rotation.x = -1.3 + rnd() * 0.25;
+      l.scale.setScalar(0.8 + rnd() * 0.35);
       grp.add(l);
     }
-    if (!half) { const st = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.14, 8), m.leaf); st.position.y = 0.44; st.rotation.z = 0.2; grp.add(st); }
+    if (!half) { const st = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.022, 0.13, 8), m.leaf); st.position.y = 0.44; st.rotation.z = 0.2; grp.add(st); }
   }
   return grp;
 }
 
-function makeSlice(m, kind, r = 0.19, h = 0.065, seed = 3) {
-  const g = new THREE.CylinderGeometry(r, r, h, 48, 1);
-  const nz = makeNoise(seed); const p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getZ(i); const a = Math.atan2(z, x); const f = 1 + nz.n3(Math.cos(a) * 1.5, Math.sin(a) * 1.5, 0) * 0.05; p.setX(i, x * f); p.setZ(i, z * f); }
-  g.computeVertexNormals();
-  const mm = kind === 'kiwi' ? [m.kiwiSide, m.kiwiCap, m.kiwiCap] : [m.bananaSide, m.bananaCap, m.bananaCap];
-  const mesh = new THREE.Mesh(g, mm); mesh.castShadow = mesh.receiveShadow = true; return mesh;
-}
-
-function granolaGeometries() {
-  if (cache.gran) return cache.gran;
-  const out = [];
-  for (let v = 0; v < 6; v++) {
-    const g = new THREE.IcosahedronGeometry(1, 2); const nz = makeNoise(100 + v); const p = g.attributes.position;
-    const sx = 0.7 + v * 0.08, sy = 0.45 + (v % 3) * 0.12, sz = 0.8 + (v % 2) * 0.3;
-    for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); const f = 1 + nz.n3(x * 1.7, y * 1.7, z * 1.7) * 0.35; p.setXYZ(i, x * f * sx, y * f * sy, z * f * sz); }
-    g.computeVertexNormals(); out.push(g);
+// rodela com borda arredondada e projeção plana (textura do miolo nas duas faces)
+function sliceGeometry(r, h, seed) {
+  const k = `slice_${r.toFixed(3)}_${h}_${seed}`; if (cache[k]) return cache[k];
+  const b = Math.min(h * 0.45, 0.022); const pts = [];
+  pts.push(new THREE.Vector2(0, h / 2));
+  pts.push(new THREE.Vector2(r - b, h / 2));
+  for (let i = 1; i <= 6; i++) { const a = (i / 6) * Math.PI / 2; pts.push(new THREE.Vector2(r - b + Math.sin(a) * b, h / 2 - b + Math.cos(a) * b)); }
+  pts.push(new THREE.Vector2(r, -h / 2 + b));
+  for (let i = 1; i <= 6; i++) { const a = Math.PI / 2 + (i / 6) * Math.PI / 2; pts.push(new THREE.Vector2(r - b + Math.sin(a) * b, -h / 2 + b + Math.cos(a) * b)); }
+  pts.push(new THREE.Vector2(0, -h / 2));
+  pts.reverse();
+  const g = new THREE.LatheGeometry(pts, 64);
+  const nz = makeNoise(seed); const p = g.attributes.position; const uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i); const a = Math.atan2(z, x);
+    const f = 1 + nz.n3(Math.cos(a) * 1.6, Math.sin(a) * 1.6, 0) * 0.06;
+    const tilt = nz.n3(Math.cos(a) * 0.8, Math.sin(a) * 0.8, 4) * h * 0.25;
+    p.setXYZ(i, x * f, y + tilt * Math.hypot(x, z) / r, z * f);
+    uv.setXY(i, (x * f) / (2 * r * 1.06) + 0.5, (z * f) / (2 * r * 1.06) + 0.5);
   }
-  // oat flakes
-  const oat = new THREE.SphereGeometry(1, 12, 8); oat.scale(1, 0.18, 0.8); out.push(oat);
-  cache.gran = out; return out;
+  g.computeVertexNormals(); cache[k] = g; return g;
 }
-const GRANOLA_COLS = ['#c58a3b', '#a8682a', '#d9a65a', '#7d4a1f', '#e2c07c', '#b9772f', '#5f3815'];
+function makeSlice(m, kind, r = 0.19, h = 0.06, seed = 3) {
+  return new THREE.Mesh(sliceGeometry(r, h, seed), kind === 'kiwi' ? m.kiwi : m.banana);
+}
 
-function addGranola(grp, m, placeFn, count, seed = 5, scale = 0.042) {
-  const geos = granolaGeometries(); const rnd = mulberry32(seed);
+// ---------------------------------------------------------------- granola: aglomerados de flocos
+const GRANOLA_COLS = ['#b97a35', '#a0622a', '#c88f48', '#7e4519', '#d2a05a', '#94561f', '#61330f', '#ad6d2c'];
+function blobGeo(wseg, hseg, seed, sx, sy, sz, amp, bend = 0) {
+  const g = new THREE.SphereGeometry(1, wseg, hseg); const nz = makeNoise(seed); const p = g.attributes.position;
+  for (let q = 0; q < p.count; q++) {
+    const x = p.getX(q), y = p.getY(q), z = p.getZ(q); const f = 1 + nz.n3(x * 2, y * 2, z * 2) * amp;
+    p.setXYZ(q, x * f * sx, y * f * sy + x * x * bend, z * f * sz);
+  }
+  g.computeVertexNormals(); return g;
+}
+function granolaClusters() {
+  if (cache.clusters) return cache.clusters;
+  const out = [];
+  const col = new THREE.Color();
+  for (let v = 0; v < 10; v++) {
+    const rnd = mulberry32(300 + v); const parts = [];
+    const n = v === 9 ? 1 : 4 + Math.floor(rnd() * 6);
+    for (let i = 0; i < n; i++) {
+      const kind = rnd(); const sd = 500 + v * 31 + i;
+      let g;
+      if (kind < 0.45) { g = blobGeo(8, 5, sd, 0.42, 0.1, 0.3, 0.22, 0.06); col.set(GRANOLA_COLS[Math.floor(rnd() * GRANOLA_COLS.length)]); } // floco de aveia
+      else if (kind < 0.9) { g = blobGeo(6, 4, sd, 0.34, 0.24, 0.36, 0.38); col.set(GRANOLA_COLS[2 + Math.floor(rnd() * 6)]); } // pedaço tostado
+      else if (kind < 0.94) { g = blobGeo(6, 3, sd, 0.4, 0.1, 0.22, 0.1); col.set('#dcc08c'); } // lasca de castanha
+      else { g = blobGeo(6, 4, sd, 0.22, 0.13, 0.18, 0.25); col.set('#2c1210'); } // uva-passa
+      const e = new THREE.Euler(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28);
+      g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(e));
+      const rr = n === 1 ? 0 : 0.55 * Math.sqrt(rnd()); const a = rnd() * 6.28;
+      g.translate(Math.cos(a) * rr, (rnd() - 0.5) * 0.35, Math.sin(a) * rr);
+      const cs = new Float32Array(g.attributes.position.count * 3);
+      const jit = 0.9 + rnd() * 0.2;
+      for (let q = 0; q < cs.length; q += 3) { cs[q] = col.r * jit; cs[q + 1] = col.g * jit; cs[q + 2] = col.b * jit; }
+      g.setAttribute('color', new THREE.BufferAttribute(cs, 3));
+      parts.push(g);
+    }
+    const merged = mergeGeometries(parts); merged.computeBoundingSphere(); out.push(merged);
+  }
+  cache.clusters = out; return out;
+}
+
+function addGranola(grp, m, placeFn, count, seed = 5, scale = 0.07) {
+  const geos = granolaClusters(); const rnd = mulberry32(seed);
   const per = Math.ceil(count / geos.length);
-  const dummy = new THREE.Object3D(); const col = new THREE.Color();
-  geos.forEach((geo, gi) => {
-    const im = new THREE.InstancedMesh(geo, m.granola, per); im.castShadow = im.receiveShadow = true;
+  const dummy = new THREE.Object3D();
+  geos.forEach((geo) => {
+    const im = new THREE.InstancedMesh(geo, m.granola, per);
     for (let i = 0; i < per; i++) {
-      const p = placeFn(rnd);
+      const pl = placeFn(rnd);
+      const p = pl.isVector3 ? pl : pl.pos;
       dummy.position.copy(p);
-      dummy.rotation.set(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28);
-      const s = scale * (0.6 + rnd() * 0.8) * (gi === geos.length - 1 ? 1.3 : 1);
-      dummy.scale.setScalar(s); dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix);
-      col.set(gi === geos.length - 1 ? '#e8d2a0' : GRANOLA_COLS[Math.floor(rnd() * GRANOLA_COLS.length)]);
-      im.setColorAt(i, col);
+      if (pl.quat) dummy.quaternion.copy(pl.quat); else dummy.rotation.set(rnd() * 0.8 - 0.4, rnd() * 6.28, rnd() * 0.8 - 0.4);
+      dummy.scale.setScalar((pl.scale ?? scale) * (0.65 + rnd() * 0.7));
+      dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix);
     }
     grp.add(im);
   });
 }
 
-// variable radius tube
+// ---------------------------------------------------------------- caldas
 function varTube(curve, segs, radial, radiusFn, flat = 0.75) {
   const frames = curve.computeFrenetFrames(segs, false);
   const pos = [], nor = [], idx = [];
@@ -515,8 +524,7 @@ function dropHeight(x, z, targets, fallback) {
 function addDrizzle(grp, mat, targets, { seed = 2, loops = 3.2, radius = 0.03, spread = 0.78, drips = 3, angle = 0, pattern = 'spiral' } = {}) {
   const rnd = mulberry32(seed);
   const pts = [];
-  // spiral pour (default) or zig-zag
-  const steps = 420; const R = INNER(EDGE_Y) * spread;
+  const steps = 460; const R = INNER(EDGE_Y) * spread;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     let x, z;
@@ -534,15 +542,13 @@ function addDrizzle(grp, mat, targets, { seed = 2, loops = 3.2, radius = 0.03, s
     pts.push(new THREE.Vector3(x, 0, z));
   }
   grp.updateMatrixWorld(true);
-  // drape
-  let ys = pts.map((p) => dropHeight(p.x, p.z, targets, topHeight(p.x, p.z)) + radius * 0.25);
-  const floor = pts.map((p) => topHeight(p.x, p.z) + radius * 0.3);
+  let ys = pts.map((p) => dropHeight(p.x, p.z, targets, topHeight(p.x, p.z)) + radius * 0.2);
+  const floor = pts.map((p) => topHeight(p.x, p.z) + radius * 0.25);
   for (let k = 0; k < 3; k++) ys = ys.map((y, i) => (i === 0 || i === ys.length - 1) ? y : Math.max(floor[i], (ys[i - 1] + 2 * y + ys[i + 1]) / 4));
   pts.forEach((p, i) => (p.y = ys[i]));
   const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-  const geo = varTube(curve, 1200, 14, (t) => radius * (0.7 + 0.7 * Math.abs(N.n3(t * 14, seed, 8.8))) * smooth(0, 0.03, t) * smooth(1, 0.96, t) + 0.003, 0.3);
-  const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = true; mesh.receiveShadow = true; grp.add(mesh);
-  // drips over the rim
+  const geo = varTube(curve, 1400, 16, (t) => radius * (0.65 + 0.8 * Math.abs(N.n3(t * 14, seed, 8.8))) * smooth(0, 0.03, t) * smooth(1, 0.96, t) + 0.003, 0.32);
+  grp.add(new THREE.Mesh(geo, mat));
   for (let d = 0; d < drips; d++) {
     const a = (d / drips) * Math.PI * 2 + rnd() * 0.8 + angle;
     const len = 0.25 + rnd() * 0.55;
@@ -551,98 +557,139 @@ function addDrizzle(grp, mat, targets, { seed = 2, loops = 3.2, radius = 0.03, s
     const r0 = INNER(EDGE_Y) * 0.75;
     dp.push(new THREE.Vector3(ca * r0, topHeight(ca * r0, sa * r0) + 0.01, sa * r0));
     dp.push(new THREE.Vector3(ca * (RT - 0.05), EDGE_Y + 0.05, sa * (RT - 0.05)));
-    dp.push(new THREE.Vector3(ca * (RT + 0.04), H + 0.01, sa * (RT + 0.04)));
+    dp.push(new THREE.Vector3(ca * (RT + 0.045), H + 0.01, sa * (RT + 0.045)));
     const steps2 = 6;
-    for (let i = 1; i <= steps2; i++) { const y = H - (len * i) / steps2; const rr = cupR(y) + 0.03; const wob = Math.sin(i * 1.7 + d) * 0.012; dp.push(new THREE.Vector3(Math.cos(a + wob) * rr, y, Math.sin(a + wob) * rr)); }
+    for (let i = 1; i <= steps2; i++) { const y = H - (len * i) / steps2; const rr = cupR(y) + 0.032; const wob = Math.sin(i * 1.7 + d) * 0.012; dp.push(new THREE.Vector3(Math.cos(a + wob) * rr, y, Math.sin(a + wob) * rr)); }
     const c2 = new THREE.CatmullRomCurve3(dp);
-    const g2 = varTube(c2, 140, 12, (t) => radius * lerp(1.0, 0.62, t) + (t > 0.86 ? radius * 0.55 * smooth(0.86, 0.95, t) * smooth(1.0, 0.95, t) : 0), 0.7);
-    const m2 = new THREE.Mesh(g2, mat); m2.castShadow = true; grp.add(m2);
+    const g2 = varTube(c2, 160, 14, (t) => radius * lerp(1.0, 0.62, t) + (t > 0.86 ? radius * 0.55 * smooth(0.86, 0.95, t) * smooth(1.0, 0.95, t) : 0), 0.7);
+    grp.add(new THREE.Mesh(g2, mat));
     const end = c2.getPointAt(1);
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.95, 16, 12), mat); bulb.scale.set(1, 1.3, 0.7); bulb.position.copy(end); bulb.position.y -= radius * 0.4;
-    // push bulb onto wall
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.95, 18, 14), mat); bulb.scale.set(1, 1.3, 0.7); bulb.position.copy(end); bulb.position.y -= radius * 0.4;
     grp.add(bulb);
   }
 }
 
-function addDroplets(grp, m, count = 520, seed = 11) {
+function addDroplets(grp, m, count = 440, seed = 11) {
   const rnd = mulberry32(seed);
-  const geo = new THREE.SphereGeometry(1, 14, 10);
+  const geo = new THREE.SphereGeometry(1, 10, 7);
   const im = new THREE.InstancedMesh(geo, m.drop, count);
-  const d = new THREE.Object3D(); const slope = (RT - RB) / H;
+  const d = new THREE.Object3D();
   for (let i = 0; i < count; i++) {
     const y = 0.12 + Math.pow(rnd(), 0.8) * (H - 0.3);
     const a = rnd() * Math.PI * 2;
     const r = cupR(y) + 0.006;
-    const nrm = new THREE.Vector3(Math.cos(a), -slope, Math.sin(a)).normalize();
+    const nrm = new THREE.Vector3(Math.cos(a), -SLOPE, Math.sin(a)).normalize();
     d.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
     d.lookAt(d.position.clone().add(nrm));
     const big = rnd() < 0.12; const trail = rnd() < 0.05;
-    let s = big ? 0.018 + rnd() * 0.02 : 0.004 + Math.pow(rnd(), 2) * 0.014;
+    const s = big ? 0.016 + rnd() * 0.018 : 0.004 + Math.pow(rnd(), 2) * 0.012;
     d.scale.set(s * (trail ? 0.8 : 1), s * (trail ? 2.8 : 1.15), s * 0.42);
     d.updateMatrix(); im.setMatrixAt(i, d.matrix);
   }
+  im.userData.noShadow = true; im.renderOrder = 3;
   grp.add(im);
 }
 
-// ---------------------------------------------------------------- top placement helpers
+// ---------------------------------------------------------------- recheio encostado na parede (visto pelo plástico)
+function wallNormal(a) { return new THREE.Vector3(Math.cos(a), -SLOPE, Math.sin(a)).normalize(); }
+function addWallGranola(grp, m, count = 400, seed = 41) {
+  addGranola(grp, m, (rnd) => {
+    const a = rnd() * Math.PI * 2; const cx = Math.cos(a) * 2.4, cz = Math.sin(a) * 2.4;
+    const [gb, gt] = granolaBand(cx, cz);
+    const v = lerp(gb + 0.006, gt - 0.006, rnd()); const y = vToY(v);
+    const s = 0.05 + rnd() * 0.035;
+    const r = INNER(y) - s * (0.05 + rnd() * 0.4);
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28));
+    return { pos: new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r), quat: q, scale: s };
+  }, count, seed);
+}
+function addWallFruit(grp, m, seed = 61) {
+  const rnd = mulberry32(seed);
+  const items = 8;
+  for (let i = 0; i < items; i++) {
+    const a = ((i + 0.25 + rnd() * 0.5) / items) * Math.PI * 2;
+    const v = 0.6 + rnd() * 0.15; const y = vToY(v);
+    const n = wallNormal(a);
+    if (i % 2 === 0) {
+      const r = 0.2 + rnd() * 0.025, h = 0.06;
+      const sl = makeSlice(m, 'banana', r, h, 70 + i);
+      sl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+      sl.rotateY(rnd() * 6.28);
+      const R = INNER(y) + 0.012 - h * 0.5; sl.position.set(Math.cos(a) * R, y, Math.sin(a) * R);
+      grp.add(sl);
+    } else {
+      const s = makeStrawberry(m, { half: true, seed: 80 + i, calyx: false });
+      const sc = 0.5 + rnd() * 0.08; s.scale.setScalar(sc);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(-1, 0, 0), n);
+      const tilt = new THREE.Quaternion().setFromAxisAngle(n, (rnd() - 0.5) * 0.9 + (rnd() < 0.3 ? Math.PI : 0));
+      s.quaternion.copy(tilt.multiply(q));
+      const R = INNER(y) + 0.011; s.position.set(Math.cos(a) * R, y, Math.sin(a) * R);
+      grp.add(s);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- montagem do copo
 function onTop(x, z, lift = 0) { return new THREE.Vector3(x, topHeight(x, z) + lift, z); }
 
-// ---------------------------------------------------------------- cup builder
-// config: { base, bare, layered, toppings: { strawberries, bananas, granola, kiwi, mango, powder, pacoca, mint, spoon }, drizzle: 'condensed'|'chocolate'|'honey'|null, drizzle2, droplets }
+// config: { base, bare, layered, toppings: { strawberries, bananas, granola, kiwi, mango, powder, pacoca, mint, spoon }, drizzle, drizzle2, droplets }
 export function buildCup(cfg = {}) {
   const base = cfg.base || 'acai';
   const m = mats(base);
   const grp = new THREE.Group();
   const cg = cupGeometry();
-  const contents = new THREE.Mesh(contentsGeometry(), cfg.layered === false ? m.sidePlain : m.side); contents.receiveShadow = true; grp.add(contents);
+  const layered = cfg.layered !== false;
+  grp.add(new THREE.Mesh(contentsGeometry(), layered ? m.side : m.sidePlain));
+  if (layered && base !== 'cupuacu') { addWallGranola(grp, m); addWallFruit(grp, m); }
   let topMat = m.top;
-  if (cfg.matteTop) { topMat = m.top.clone(); topMat.clearcoat = 0.25; topMat.clearcoatRoughness = 0.5; topMat.roughness = 0.5; topMat.envMapIntensity = 0.25; topMat.bumpScale = 0.35; topMat.specularIntensity = 0.35; }
-  const top = new THREE.Mesh(topGeometry(), topMat); top.receiveShadow = true; top.castShadow = true; grp.add(top);
-  const cup = new THREE.Mesh(cg.body, m.cup); grp.add(cup);
-  const rim = new THREE.Mesh(cg.rim, m.rim); grp.add(rim);
-  if (cfg.droplets !== false) addDroplets(grp, m);
+  if (cfg.matteTop) { topMat = m.top.clone(); topMat.clearcoat = 0.2; topMat.clearcoatRoughness = 0.5; topMat.roughness = 0.5; topMat.envMapIntensity = 0.3; topMat.specularIntensity = 0.5; }
+  const top = new THREE.Mesh(topGeometry(base), topMat); grp.add(top);
+  // plástico e gotas vão numa cena à parte, renderizada por cima sem luzes diretas
+  // (só o reflexo do estúdio): luz pontual em plástico liso vira uma faixa estourada.
+  const glass = new THREE.Group(); grp.userData.glass = glass;
+  for (const [geo, mat, order] of [[cg.body, m.haze, 1], [cg.rim, m.rimHaze, 1], [cg.body, m.cup, 2], [cg.rim, m.rim, 2]]) {
+    const o = new THREE.Mesh(geo, mat); o.userData.noShadow = true; o.renderOrder = order; glass.add(o);
+  }
+  if (cfg.droplets !== false) addDroplets(glass, m);
   const tp = cfg.toppings || {};
   const targets = [top];
   const rnd = mulberry32(cfg.seed || 21);
   if (!cfg.bare) {
-    // strawberries
     const sCount = tp.strawberries ?? 0;
     const sPos = [[-0.3, -0.3, 0.6], [0.32, -0.36, 2.0], [-0.52, 0.18, 4.0], [0.02, -0.02, 5.2], [0.5, 0.22, 1.1], [-0.12, 0.5, 3.3]];
     for (let i = 0; i < Math.min(sCount, sPos.length); i++) {
       const [x, z, rot] = sPos[i];
       const half = i !== 3;
       const s = makeStrawberry(m, { half, seed: i + 1, calyx: true });
-      const sc = half ? 0.6 : 0.56;
-      s.scale.setScalar(sc);
+      s.scale.setScalar(half ? 0.6 : 0.56);
       if (half) {
         const out = new THREE.Vector3(x, 0, z); if (out.length() < 0.05) out.set(0, 0, 1); out.normalize();
         const target = new THREE.Vector3(out.x * 0.75, 1.0, out.z * 0.75).normalize();
         const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(-1, 0, 0), target);
         const spin = new THREE.Quaternion().setFromAxisAngle(target, rot);
         s.quaternion.copy(spin.multiply(q));
-        s.position.copy(onTop(x, z, 0.07));
-      } else { s.rotation.set(0.25, rot, 0.15); s.position.copy(onTop(x, z, 0.2)); }
+        s.position.copy(onTop(x, z, 0.06));
+      } else { s.rotation.set(0.25, rot, 0.15); s.position.copy(onTop(x, z, 0.19)); }
       grp.add(s); targets.push(s);
     }
-    // bananas
     const bCount = tp.bananas ?? 0;
     const bPos = [[0.3, 0.42], [0.58, 0.02], [0.08, 0.62], [-0.3, 0.32], [0.62, -0.32], [-0.6, -0.15], [0.25, -0.62]];
     for (let i = 0; i < Math.min(bCount, bPos.length); i++) {
-      const [x, z] = bPos[i]; const sl = makeSlice(m, 'banana', 0.17 + rnd() * 0.03, 0.06, i + 3);
-      const p = onTop(x, z, 0.05); sl.position.copy(p);
+      const [x, z] = bPos[i]; const sl = makeSlice(m, 'banana', 0.17 + rnd() * 0.03, 0.055, i + 3);
+      sl.position.copy(onTop(x, z, 0.04));
       sl.rotation.set(0.18 + rnd() * 0.32, rnd() * 6, (rnd() - 0.5) * 0.35);
       grp.add(sl); targets.push(sl);
     }
     const kCount = tp.kiwi ?? 0;
     const kPos = [[-0.4, -0.45], [0.48, 0.08], [-0.1, 0.35]];
     for (let i = 0; i < Math.min(kCount, kPos.length); i++) {
-      const [x, z] = kPos[i]; const sl = makeSlice(m, 'kiwi', 0.2, 0.055, i + 30);
+      const [x, z] = kPos[i]; const sl = makeSlice(m, 'kiwi', 0.2, 0.05, i + 30);
       sl.position.copy(onTop(x, z, 0.05)); sl.rotation.set(0.5 + rnd() * 0.4, rnd() * 6, (rnd() - 0.5) * 0.5); grp.add(sl); targets.push(sl);
     }
     const mCount = tp.mango ?? 0;
     for (let i = 0; i < mCount; i++) {
       const a = rnd() * Math.PI * 2, r = 0.15 + rnd() * 0.55;
-      const b = new THREE.Mesh(new RoundedBoxGeometry(0.17, 0.15, 0.16, 3, 0.035), m.mango); b.castShadow = b.receiveShadow = true;
+      const b = new THREE.Mesh(new RoundedBoxGeometry(0.17, 0.15, 0.16, 3, 0.035), m.mango);
       b.position.copy(onTop(Math.cos(a) * r, Math.sin(a) * r, 0.06)); b.rotation.set(rnd(), rnd() * 6, rnd()); grp.add(b); targets.push(b);
     }
     if (tp.powder) {
@@ -650,9 +697,8 @@ export function buildCup(cfg = {}) {
       const nz = makeNoise(77); const p = g.attributes.position;
       for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); const f = 1 + nz.fbm(x * 5, y * 5, z * 5, 3) * 0.25; p.setXYZ(i, x * f, y * f * 0.55, z * f); }
       g.computeVertexNormals();
-      const mound = new THREE.Mesh(g, m.powder); mound.castShadow = mound.receiveShadow = true;
+      const mound = new THREE.Mesh(g, m.powder);
       mound.position.copy(onTop(0.08, 0.05, -0.04)); grp.add(mound); targets.push(mound);
-      // dusting
       const dust = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), m.powder, 900); const d = new THREE.Object3D();
       for (let i = 0; i < 900; i++) { const a = rnd() * 6.28, r = Math.sqrt(rnd()) * 0.85; const x = Math.cos(a) * r, z = Math.sin(a) * r; d.position.copy(onTop(x, z, 0.004)); d.scale.setScalar(0.006 + rnd() * 0.01); d.rotation.set(rnd() * 6, rnd() * 6, 0); d.updateMatrix(); dust.setMatrixAt(i, d.matrix); }
       grp.add(dust);
@@ -660,7 +706,7 @@ export function buildCup(cfg = {}) {
     if (tp.pacoca) {
       for (let i = 0; i < tp.pacoca; i++) {
         const a = rnd() * 6.28, r = 0.2 + rnd() * 0.5;
-        const b = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.1, 0.13, 2, 0.02), m.pacoca); b.castShadow = true;
+        const b = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.1, 0.13, 2, 0.02), m.pacoca);
         b.position.copy(onTop(Math.cos(a) * r, Math.sin(a) * r, 0.04)); b.rotation.set(rnd(), rnd() * 6, rnd()); grp.add(b); targets.push(b);
       }
     }
@@ -668,9 +714,9 @@ export function buildCup(cfg = {}) {
       const R = INNER(EDGE_Y);
       const arc = tp.granolaArc ?? [Math.PI * 0.55, Math.PI * 1.45];
       addGranola(grp, m, (r) => {
-        const a = lerp(arc[0], arc[1], r()); const rr = R * (0.45 + Math.sqrt(r()) * 0.5);
-        const x = Math.cos(a) * rr, z = Math.sin(a) * rr; return onTop(x, z, 0.012);
-      }, tp.granola, 5);
+        const a = lerp(arc[0], arc[1], r()); const rr = R * (0.42 + Math.sqrt(r()) * 0.54);
+        const x = Math.cos(a) * rr, z = Math.sin(a) * rr; return onTop(x, z, 0.02 + r() * 0.03);
+      }, Math.round(tp.granola * 0.55), 5, 0.075);
     }
     if (tp.mint) {
       const s = new THREE.Shape(); s.moveTo(0, 0); s.quadraticCurveTo(0.12, 0.1, 0, 0.32); s.quadraticCurveTo(-0.12, 0.1, 0, 0);
@@ -678,13 +724,13 @@ export function buildCup(cfg = {}) {
         const g = new THREE.ShapeGeometry(s, 16); const p = g.attributes.position;
         for (let k = 0; k < p.count; k++) { const x = p.getX(k), y = p.getY(k); p.setZ(k, Math.abs(x) * 0.5 - y * y * 0.4); }
         g.computeVertexNormals();
-        const l = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: '#3f9a3a', roughness: 0.4, clearcoat: 0.6, side: THREE.DoubleSide }));
-        l.castShadow = true; l.position.copy(onTop(-0.05 + i * 0.06, 0.05, 0.16)); l.rotation.set(-1.0, i * 1.9 + 0.4, 0.2); l.scale.setScalar(1.1); grp.add(l);
+        const l = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: '#3f9a3a', roughness: 0.4, clearcoat: 0.6, side: THREE.DoubleSide, envMap: ENV, envMapIntensity: 0.6 }));
+        l.position.copy(onTop(-0.05 + i * 0.06, 0.05, 0.16)); l.rotation.set(-1.0, i * 1.9 + 0.4, 0.2); l.scale.setScalar(1.1); grp.add(l);
       }
     }
     if (cfg.drizzle) {
       const mat = cfg.drizzle === 'chocolate' ? m.choc : cfg.drizzle === 'honey' ? m.honey : m.milk;
-      addDrizzle(grp, mat, cfg.drapeAll ? targets : [top], { seed: 3, drips: cfg.drips ?? 3, radius: cfg.drizzle === 'chocolate' ? 0.034 : 0.03, loops: cfg.loops ?? 3.2, angle: 0.4, spread: 0.86, pattern: cfg.pattern || 'spiral' });
+      addDrizzle(grp, mat, cfg.drapeAll ? targets : [top], { seed: 3, drips: cfg.drips ?? 3, radius: cfg.drizzle === 'chocolate' ? 0.034 : 0.031, loops: cfg.loops ?? 3.2, angle: 0.4, spread: 0.86, pattern: cfg.pattern || 'spiral' });
     }
     if (cfg.drizzle2) {
       const mat = cfg.drizzle2 === 'chocolate' ? m.choc : cfg.drizzle2 === 'honey' ? m.honey : m.milk;
@@ -694,29 +740,34 @@ export function buildCup(cfg = {}) {
       const sg = new THREE.Group();
       const handle = new THREE.Mesh(new RoundedBoxGeometry(0.09, 1.1, 0.025, 2, 0.012), m.spoon); handle.position.y = 0.55; sg.add(handle);
       const bowl = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), m.spoon); bowl.scale.set(1, 0.35, 1.3); bowl.rotation.x = Math.PI / 2; sg.add(bowl);
-      sg.position.copy(onTop(-0.35, -0.15, -0.15)); sg.rotation.set(-0.35, 0.6, 0.3); sg.traverse((o) => (o.castShadow = true)); grp.add(sg);
+      sg.position.copy(onTop(-0.35, -0.15, -0.15)); sg.rotation.set(-0.35, 0.6, 0.3); grp.add(sg);
     }
   } else if (cfg.drizzle && cfg.bareDrizzle) {
     addDrizzle(grp, m.milk, targets, { seed: 3, drips: cfg.drips ?? 3, loops: 4.5, angle: 0.4 });
   }
+  applyShadows(grp);
   return grp;
 }
 
-// ---------------------------------------------------------------- sprites
+function applyShadows(grp) {
+  grp.traverse((o) => { if (o.isMesh) { const no = o.userData.noShadow; o.castShadow = !no; o.receiveShadow = !no; } });
+}
+
+// ---------------------------------------------------------------- recortes (ingredientes)
 export function buildSprite(kind) {
   const m = mats('acai'); const grp = new THREE.Group(); const rnd = mulberry32(kind.length * 7 + 3);
   if (kind === 'strawberry') { const s = makeStrawberry(m, { half: false, seed: 2 }); s.rotation.set(0.35, 0.4, -0.25); grp.add(s); }
   else if (kind === 'strawberry-half') { const s = makeStrawberry(m, { half: true, seed: 4 }); s.rotation.set(0.12, Math.PI / 2 - 0.6, -0.1); grp.add(s); }
-  else if (kind === 'banana-slice') { const sl = makeSlice(m, 'banana', 0.2, 0.07, 5); sl.rotation.set(1.05, 0, 0.25); grp.add(sl); }
-  else if (kind === 'kiwi-slice') { const sl = makeSlice(m, 'kiwi', 0.22, 0.06, 6); sl.rotation.set(1.0, 0, -0.2); grp.add(sl); }
+  else if (kind === 'banana-slice') { const sl = makeSlice(m, 'banana', 0.2, 0.065, 5); sl.rotation.set(1.05, 0, 0.25); grp.add(sl); }
+  else if (kind === 'kiwi-slice') { const sl = makeSlice(m, 'kiwi', 0.22, 0.055, 6); sl.rotation.set(1.0, 0, -0.2); grp.add(sl); }
   else if (kind === 'mango') { const b = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.27, 0.28, 4, 0.06), m.mango); b.rotation.set(0.5, 0.7, 0.2); grp.add(b); }
-  else if (kind === 'granola') { addGranola(grp, m, (r) => new THREE.Vector3((r() - 0.5) * 0.5, (r() - 0.5) * 0.28, (r() - 0.5) * 0.3), 46, 9, 0.05); }
-  else if (kind === 'granola-bit') { addGranola(grp, m, (r) => new THREE.Vector3((r() - 0.5) * 0.06, (r() - 0.5) * 0.06, (r() - 0.5) * 0.06), 7, 13, 0.06); }
+  else if (kind === 'granola') { addGranola(grp, m, (r) => new THREE.Vector3((r() - 0.5) * 0.5, (r() - 0.5) * 0.24, (r() - 0.5) * 0.3), 40, 9, 0.085); }
+  else if (kind === 'granola-bit') { addGranola(grp, m, (r) => new THREE.Vector3((r() - 0.5) * 0.04, (r() - 0.5) * 0.04, (r() - 0.5) * 0.04), 2, 13, 0.11); }
   else if (kind === 'milk-drop' || kind === 'choc-drop' || kind === 'acai-drop') {
     const pts = [];
-    for (let i = 0; i <= 48; i++) { const t = Math.PI * (1 - i / 48); const r = Math.sin(t) * Math.pow(Math.sin(t / 2), 1.6) * 0.24; pts.push(new THREE.Vector2(Math.max(0.0001, r), Math.cos(t) * 0.3)); }
-    const g = new THREE.LatheGeometry(pts, 48);
-    const acaiGloss = new THREE.MeshPhysicalMaterial({ color: '#3d0f5a', roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 0.4, sheenColor: new THREE.Color('#b47be0') });
+    for (let i = 0; i <= 56; i++) { const t = Math.PI * (1 - i / 56); const r = Math.sin(t) * Math.pow(Math.sin(t / 2), 1.6) * 0.24; pts.push(new THREE.Vector2(Math.max(0.0001, r), Math.cos(t) * 0.3)); }
+    const g = new THREE.LatheGeometry(pts, 56);
+    const acaiGloss = new THREE.MeshPhysicalMaterial({ color: '#3a0c33', roughness: 0.14, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 0.5, sheenColor: new THREE.Color('#b0589e'), envMap: ENV, envMapIntensity: 0.9 });
     const d = new THREE.Mesh(g, kind === 'milk-drop' ? m.milk : kind === 'acai-drop' ? acaiGloss : m.choc); d.rotation.z = kind === 'acai-drop' ? 0 : 0.15; grp.add(d);
   }
   else if (kind === 'acai-berries') {
@@ -735,43 +786,88 @@ export function buildSprite(kind) {
   else if (kind === 'mint') {
     const s = new THREE.Shape(); s.moveTo(0, 0); s.quadraticCurveTo(0.14, 0.12, 0, 0.36); s.quadraticCurveTo(-0.14, 0.12, 0, 0);
     const g = new THREE.ShapeGeometry(s, 16); const p = g.attributes.position; for (let k = 0; k < p.count; k++) { const x = p.getX(k), y = p.getY(k); p.setZ(k, Math.abs(x) * 0.5 - y * y * 0.3); } g.computeVertexNormals();
-    const l = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: '#3f9a3a', roughness: 0.4, clearcoat: 0.6, side: THREE.DoubleSide })); l.rotation.set(-0.6, 0.3, 0.4); l.position.y = -0.15; grp.add(l);
+    const l = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: '#3f9a3a', roughness: 0.4, clearcoat: 0.6, side: THREE.DoubleSide, envMap: ENV, envMapIntensity: 0.6 })); l.rotation.set(-0.6, 0.3, 0.4); l.position.y = -0.15; grp.add(l);
   }
-  grp.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  applyShadows(grp);
   return grp;
 }
 
-// ---------------------------------------------------------------- stage
-let renderer, scene, camera, key, rim, fill, current;
-export function setup({ width = 1000, height = 1250, ss = 2 } = {}) {
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true, premultipliedAlpha: false });
+// ---------------------------------------------------------------- estúdio
+let renderer, scene, glassScene, camera, key, rim, sky, hemi, current, ENV = null;
+let glassLinks = [];
+const keyBase = new THREE.Vector3(-6, 6.5, 5);
+const TARGET = new THREE.Vector3(0, 1.5, 0);
+let PASSES = 24, KEY_SOFT = 1.1;
+export function setQuality({ passes, keySoft } = {}) { if (passes) PASSES = passes; if (keySoft) KEY_SOFT = keySoft; }
+
+function studioEnvironment() {
+  const s = new THREE.Scene();
+  const dome = new THREE.SphereGeometry(40, 64, 32);
+  const cols = []; const p = dome.attributes.position;
+  const top = new THREE.Color(0.16, 0.15, 0.15), mid = new THREE.Color(0.055, 0.05, 0.055), low = new THREE.Color(0.02, 0.018, 0.022);
+  const c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) { const y = p.getY(i) / 40; if (y > 0) c.copy(mid).lerp(top, Math.pow(y, 0.8)); else c.copy(mid).lerp(low, Math.pow(-y, 0.5)); cols.push(c.r, c.g, c.b); }
+  dome.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  s.add(new THREE.Mesh(dome, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  const box = (w, h, intensity, color, pos) => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide }));
+    mesh.position.set(...pos); mesh.lookAt(0, 1.5, 0); s.add(mesh);
+  };
+  // faixas altas: em superfície vertical o reflexo olha para baixo, então descem bem
+  box(4.5, 34, 16, '#fff3e8', [-10, 0, 6]);  // softbox principal (esquerda)
+  box(1.6, 34, 12, '#ffffff', [10, 0, 2.5]); // faixa da direita
+  box(2.2, 30, 7, '#ffd6ec', [6, 0, -10]);   // contraluz rosado
+  box(9, 9, 3.2, '#ffffff', [0, 14, 0]);     // teto
+  box(4, 3, 1.2, '#ffffff', [0, 1, 12]);     // rebatedor frontal
+  return s;
+}
+
+export function setup({ width = 1000, height = 1250, ss = 1.25 } = {}) {
+  renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true, premultipliedAlpha: false });
   renderer.setPixelRatio(1);
-  renderer.setSize(width * ss, height * ss, false);
+  renderer.setSize(Math.round(width * ss), Math.round(height * ss), false);
   renderer.toneMapping = THREE.NeutralToneMapping; renderer.toneMappingExposure = 1.0;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.setClearColor(0x000000, 0);
   document.body.appendChild(renderer.domElement);
-  renderer.domElement.style.width = width + 'px';
   scene = new THREE.Scene();
   const pm = new THREE.PMREMGenerator(renderer);
-  scene.environment = pm.fromScene(new RoomEnvironment(), 0.03).texture;
-  scene.environmentIntensity = 0.55;
+  ENV = pm.fromScene(studioEnvironment(), 0.0).texture;
+  scene.environment = ENV;
+  glassScene = new THREE.Scene(); glassScene.environment = ENV;
+  scene.environmentIntensity = 1.0;
   camera = new THREE.PerspectiveCamera(20, width / height, 0.1, 100);
-  key = new THREE.DirectionalLight('#fff1e2', 3.2); key.position.set(-6, 4.5, 3.5); key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048); key.shadow.camera.left = -2; key.shadow.camera.right = 2; key.shadow.camera.top = 2; key.shadow.camera.bottom = -2; key.shadow.camera.near = 1; key.shadow.camera.far = 20; key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.radius = 4;
-  scene.add(key); scene.add(key.target); key.target.position.set(0, 1.6, 0);
-  rim = new THREE.DirectionalLight('#ff9ccf', 3.0); rim.position.set(5, 3, -5); scene.add(rim);
-  fill = new THREE.DirectionalLight('#d9c8ff', 0.7); fill.position.set(3, 1, 6); scene.add(fill);
-  const top = new THREE.DirectionalLight('#ffffff', 1.0); top.position.set(0, 8, 1); scene.add(top);
-  scene.add(new THREE.HemisphereLight('#fff6ec', '#3a1c4f', 0.35));
+  const shadowed = (l, size = 2048, ext = 2.4) => {
+    l.castShadow = true; l.shadow.mapSize.set(size, size);
+    Object.assign(l.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext, near: 0.5, far: 30 });
+    l.shadow.bias = -0.0003; l.shadow.normalBias = 0.015; l.shadow.radius = 3;
+    l.target.position.copy(TARGET); scene.add(l.target);
+  };
+  key = new THREE.DirectionalLight('#fff2e4', 2.3); key.position.copy(keyBase); shadowed(key, 1536); scene.add(key);
+  rim = new THREE.DirectionalLight('#ffd3ea', 2.0); rim.position.set(5.5, 3.5, -5.5); rim.target.position.copy(TARGET); scene.add(rim.target); scene.add(rim);
+  sky = new THREE.DirectionalLight('#f3efff', 1.25); sky.position.set(0, 10, 0); shadowed(sky, 1024, 2.6); scene.add(sky);
+  hemi = new THREE.HemisphereLight('#fff6ee', '#2a1530', 0.12); scene.add(hemi);
   window.__three = { renderer, scene, camera };
   return true;
 }
 
 export function show(obj) {
   if (current) scene.remove(current);
+  for (const { glass } of glassLinks) glassScene.remove(glass);
+  glassLinks = [];
   current = obj; scene.add(obj);
+  obj.traverse((o) => { const g = o.userData.glass; if (g) { g.matrixAutoUpdate = false; glassScene.add(g); glassLinks.push({ owner: o, glass: g }); } });
+}
+function syncGlass() {
+  scene.updateMatrixWorld(true);
+  for (const { owner, glass } of glassLinks) { glass.matrix.copy(owner.matrixWorld); glass.matrixWorldNeedsUpdate = true; }
+}
+function renderAll() {
+  syncGlass();
+  renderer.autoClear = true; renderer.render(scene, camera);
+  renderer.autoClear = false; renderer.render(glassScene, camera);
+  renderer.autoClear = true;
 }
 
 export function view({ angle = 0, elevation = 12, distance = 9.4, target = [0, 1.32, 0], fov = 20, aspect } = {}) {
@@ -782,20 +878,59 @@ export function view({ angle = 0, elevation = 12, distance = 9.4, target = [0, 1
   camera.lookAt(new THREE.Vector3(...target));
 }
 
-export function setLights({ keyI = 3.2, rimI = 3.0, env = 0.55, exposure = 1.15 } = {}) {
-  key.intensity = keyI; rim.intensity = rimI; scene.environmentIntensity = env; renderer.toneMappingExposure = exposure;
+export function setLights({ keyI = 2.3, rimI = 2.0, skyI = 1.25, env = 1.0, exposure = 1.0 } = {}) {
+  key.intensity = keyI; rim.intensity = rimI; sky.intensity = skyI; scene.environmentIntensity = env; renderer.toneMappingExposure = exposure;
 }
 
-export function resize(width, height, ss = 2) {
-  renderer.setSize(width * ss, height * ss, false); renderer.domElement.style.width = width + 'px';
+export function resize(width, height, ss = 1.25) {
+  renderer.setSize(Math.round(width * ss), Math.round(height * ss), false);
   camera.aspect = width / height; camera.updateProjectionMatrix();
 }
 
-export function capture(width, height, type = 'image/webp', quality = 0.86) {
-  renderer.render(scene, camera);
+const LIN = new Float32Array(256); for (let i = 0; i < 256; i++) { const c = i / 255; LIN[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+const ENC = new Uint8ClampedArray(4097); for (let i = 0; i <= 4096; i++) { const l = i / 4096; ENC[i] = Math.round(255 * (l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055)); }
+const keyU = new THREE.Vector3(), keyV = new THREE.Vector3();
+
+// Renderiza PASSES vezes variando subpixel, posição da luz principal (sombra suave) e
+// direção da luz do céu (oclusão), e tira a média em espaço linear com alfa pré-multiplicado.
+export function capture(width, height, type = 'image/webp', quality = 0.86, passes = PASSES) {
+  const W = renderer.domElement.width, Hh = renderer.domElement.height;
+  const gl = renderer.getContext();
+  const acc = new Float32Array(W * Hh * 4); const buf = new Uint8Array(W * Hh * 4);
+  const dir = keyBase.clone().sub(TARGET).normalize();
+  keyU.crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize(); keyV.crossVectors(keyU, dir).normalize();
+  for (let i = 0; i < passes; i++) {
+    const k = i + 1;
+    if (passes > 1) camera.setViewOffset(W, Hh, halton(k, 2) - 0.5, halton(k, 3) - 0.5, W, Hh);
+    const a = 2 * Math.PI * halton(k, 5), rr = Math.sqrt(halton(k, 7)) * KEY_SOFT;
+    key.position.copy(keyBase).addScaledVector(keyU, Math.cos(a) * rr).addScaledVector(keyV, Math.sin(a) * rr);
+    const phi = 2 * Math.PI * halton(k, 11), ct = Math.sqrt(1 - halton(k, 13) * 0.92), st = Math.sqrt(1 - ct * ct);
+    sky.position.set(TARGET.x + st * Math.cos(phi) * 12, TARGET.y + ct * 12, TARGET.z + st * Math.sin(phi) * 12);
+    renderAll();
+    gl.readPixels(0, 0, W, Hh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    for (let j = 0; j < buf.length; j += 4) {
+      const al = buf[j + 3] / 255; if (al === 0) continue;
+      acc[j] += LIN[buf[j]] * al; acc[j + 1] += LIN[buf[j + 1]] * al; acc[j + 2] += LIN[buf[j + 2]] * al; acc[j + 3] += al;
+    }
+  }
+  camera.clearViewOffset();
+  const [full, fctx] = canvas(W, Hh); const img = fctx.createImageData(W, Hh); const d = img.data;
+  for (let y = 0; y < Hh; y++) {
+    const src = (Hh - 1 - y) * W * 4, dst = y * W * 4;
+    for (let x = 0; x < W * 4; x += 4) {
+      const A = acc[src + x + 3];
+      if (A <= 0) { d[dst + x + 3] = 0; continue; }
+      d[dst + x] = ENC[Math.min(4096, Math.round((acc[src + x] / A) * 4096))];
+      d[dst + x + 1] = ENC[Math.min(4096, Math.round((acc[src + x + 1] / A) * 4096))];
+      d[dst + x + 2] = ENC[Math.min(4096, Math.round((acc[src + x + 2] / A) * 4096))];
+      d[dst + x + 3] = Math.round((A / passes) * 255);
+    }
+  }
+  fctx.putImageData(img, 0, 0);
   const [c, ctx] = canvas(width, height);
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(renderer.domElement, 0, 0, width, height);
+  if (bgCanvas) ctx.drawImage(bgCanvas, 0, 0, width, height);
+  ctx.drawImage(full, 0, 0, width, height);
   return c.toDataURL(type, quality);
 }
 
@@ -806,31 +941,16 @@ export function frameObject(obj, { margin = 1.12, elevation = 12, fov = 30, aspe
   return { distance: dist, target: [center.x, center.y, center.z], fov, elevation };
 }
 
-let ground = null;
-export function setGround(on, opacity = 0.28) {
-  if (!ground) {
-    ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity }));
-    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
-    const [c, ctx] = canvas(256, 256); const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 128);
-    g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(0.5, 'rgba(0,0,0,0.18)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 256);
-    const blob = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 2.6), new THREE.MeshBasicMaterial({ map: tex(c, { srgb: false }), transparent: true, depthWrite: false }));
-    blob.rotation.x = -Math.PI / 2; blob.position.y = 0.002; ground.userData.blob = blob;
-    key.shadow.camera.left = -6; key.shadow.camera.right = 6; key.shadow.camera.top = 6; key.shadow.camera.bottom = -6; key.shadow.camera.updateProjectionMatrix();
-  }
-  ground.material.opacity = opacity;
-  if (on) { scene.add(ground); } else { scene.remove(ground); }
-  return ground;
-}
-export function addBlobAt(x, z, s = 1) { const b = ground.userData.blob.clone(); b.position.set(x, 0.002, z); b.scale.setScalar(s); scene.add(b); return b; }
+// Fundo opcional (imagens com cenário). Desenhado atrás no capture; a cena continua com alfa.
+let bgCanvas = null;
 export function setBackground(spec) {
-  if (!spec) { scene.background = null; return; }
+  if (!spec) { bgCanvas = null; return; }
   const [c, ctx] = canvas(1024, 1024);
   if (spec.type === 'radial') { const g = ctx.createRadialGradient(512, spec.cy ?? 420, 30, 512, 512, 760); g.addColorStop(0, spec.inner); g.addColorStop(1, spec.outer); ctx.fillStyle = g; }
   else { const g = ctx.createLinearGradient(0, 0, 0, 1024); g.addColorStop(0, spec.top); g.addColorStop(1, spec.bottom); ctx.fillStyle = g; }
   ctx.fillRect(0, 0, 1024, 1024);
-  scene.background = tex(c);
+  bgCanvas = c;
 }
 export function group(...objs) { const g = new THREE.Group(); objs.forEach((o) => g.add(o)); return g; }
-window.SCENE = { setGround, addBlobAt, setBackground, group, setTopRes, setup, buildCup, buildSprite, show, view, setLights, resize, capture, frameObject, THREE };
+window.SCENE = { setBackground, group, setTopRes, setup, setQuality, buildCup, buildSprite, show, view, setLights, resize, capture, frameObject, THREE };
 window.sceneReady = true;
